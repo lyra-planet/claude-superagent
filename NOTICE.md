@@ -8,8 +8,12 @@ Source: https://github.com/deepseek-ai/dsh-superagent-prototype, commit `6337fc8
 
 | Files here | Status |
 |---|---|
-| `src/core/*.ts`, `src/admission.ts`, `src/limits.ts`, `src/kv.ts`, `src/setup.ts`, `src/infra/text.ts`, `src/infra/health.ts`, `src/infra/paths.ts`, `src/infra/commands.ts` | Copied unchanged |
-| `src/policy.ts` | Copied; one import now points at `src/infra/worker-commands.ts`, and the Execution settings gained `sandbox` |
+| `src/core/*.ts` except the three below, `src/admission.ts`, `src/limits.ts`, `src/infra/text.ts`, `src/infra/health.ts`, `src/infra/commands.ts` | Copied unchanged |
+| `src/core/ports.ts`, `src/core/intake.ts` | Copied; the Policy port gained `owns`, and a person it does not let decide a ticket's follow-ups reaches the ticket as context only (`docs/design.md`) |
+| `src/core/errors.ts` | Copied; the panel-only execution environment also names the Bash sandbox and its domains |
+| `src/kv.ts` | Copied; keys for the terminal Source's conversations added |
+| `src/setup.ts`, `src/infra/paths.ts` | Copied; messages and the package lookup name this project |
+| `src/policy.ts` | Copied; one import now points at `src/infra/worker-commands.ts`, the Execution settings gained `sandbox` and `networkDomains`, and the Policy implements `owns` |
 | `src/infra/worker-commands.ts` | The `WORKER_COMMANDS` constant, moved out of upstream `src/infra/environment.ts` |
 | `src/infra/environment.ts` | Copied; commands run through Node's `child_process` instead of DeepSeek Harness's subprocess service |
 | `src/deployment.ts` | Copied; the machine configuration is a JSON file read with zod instead of a DeepSeek Harness plugin configuration |

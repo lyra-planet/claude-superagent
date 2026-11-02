@@ -18,8 +18,12 @@ import { KV } from '../kv.ts'
  */
 export class SettingsConflict extends Error {}
 const now = (): string => new Date().toISOString()
-/** Executor settings that control shell execution paths, prepare commands, and command shims. */
-const environment = ({ executor }: SettingsValue) => JSON.stringify([executor.directory, executor.prepare, executor.blockedCommands])
+/**
+ * Executor settings that control shell execution paths, prepare commands, command shims and the workers' sandbox, which only a
+ * person in the panel may change: the router reads untrusted messages and must never widen what workers' Bash may do.
+ */
+const environment = ({ executor }: SettingsValue) =>
+  JSON.stringify([executor.directory, executor.prepare, executor.blockedCommands, executor.sandbox, executor.networkDomains])
 
 /** Schema parser, settings merger, and non-panel origin guard for one settings block kind. */
 interface Block {

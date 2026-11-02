@@ -197,7 +197,7 @@ export class Prompts {
     const environment = environmentSection(config, this.environment()), policy = policySection(this.store.settings(), config)
     return { orchestrator: composePrompt(config, 'orchestrator', environment, policy), worker: composePrompt(config, 'worker', environment),
       parts: { orchestrator: promptParts(config, 'orchestrator', environment, policy), worker: promptParts(config, 'worker', environment) },
-      skills: Object.fromEntries(this.skills(config)), scope: 'Team sections, skills, and overrides of built-in parts, which follow their built-in text until overridden. Workers additionally read the Claude Code prompt and the CLAUDE.md and AGENTS.md of the repository. Prompt text changes what the agents are told, not what claude-superagent allows: tool permissions, hooks, the gate and account wrappers stay.' }
+      skills: Object.fromEntries(this.skills(config)), scope: 'Team sections, skills, and overrides of built-in parts, which follow their built-in text until overridden. Workers additionally read the Claude Code prompt; they load no CLAUDE.md themselves, and read the CLAUDE.md and AGENTS.md of the repository because the work prompt tells them to. Prompt text changes what the agents are told, not what claude-superagent allows: tool permissions, hooks, the gate and account wrappers stay.' }
   }
   save(value: unknown, baseRevision: number, source: SettingsOrigin): PromptVersion {
     const config = this.validate(value)

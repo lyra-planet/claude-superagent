@@ -153,3 +153,14 @@ it('records nothing for a pause that changes nothing, refuses a sync while setup
   h.setup.configured.mockReturnValue(true)
   expect(() => settings.block('source:x')).toThrow(new UserError('unknownBlock', { block: 'source:x' }))
 })
+
+it('lets only the panel change the workers\' sandbox and its domains, as the rest of the execution environment', async () => {
+  h = start()
+  const executor = h.store.settings().executor, revision = () => h!.store.blockRevision('executor')
+  for (const change of [{ sandbox: 'off' as const }, { networkDomains: ['evil.example'] }]) {
+    await expect(h.settings.save('executor', { ...executor, ...change }, revision(), 'tool')).rejects.toMatchObject({ code: 'panelOnlyEnvironment' })
+  }
+  expect(h.store.settings().executor).toMatchObject({ sandbox: 'on', networkDomains: [] })
+  await h.settings.save('executor', { ...executor, sandbox: 'weak', networkDomains: ['registry.npmjs.org'] }, revision(), 'panel')
+  expect(h.store.settings().executor).toMatchObject({ sandbox: 'weak', networkDomains: ['registry.npmjs.org'] })
+})

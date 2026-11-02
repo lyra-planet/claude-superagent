@@ -714,7 +714,7 @@ const TEXT = {
   'userError.notQuestion': ['回答必须针对最初由人提出的问题，而不是执行器报告或自动触发。', USER_ERRORS.notQuestion[1]],
   'userError.noAnswer': ['执行器还没有回答这条人发的触发。请等待执行器的报告，或用 orchestrator_ticket_request_status 请求一份（它只对处于等待状态的执行器起作用）；普通进展不能当作回答。', USER_ERRORS.noAnswer[1]],
   'userError.noChannel': ['这个工单或触发没有可以回复的渠道。', USER_ERRORS.noChannel[1]],
-  'userError.panelOnlyEnvironment': ['执行环境（执行目录、准备命令、禁止调用的命令）只能在管理页修改。', USER_ERRORS.panelOnlyEnvironment[1]],
+  'userError.panelOnlyEnvironment': ['执行环境（执行目录、准备命令、禁止调用的命令、Bash 沙箱及其可访问的域名）只能在管理页修改。', USER_ERRORS.panelOnlyEnvironment[1]],
   'userError.panelOnlyAccounts': ['部署检查读取的来源字段（例如账号 CLI）只能在管理页修改。', USER_ERRORS.panelOnlyAccounts[1]],
   'userError.setupComplete': ['部署检查已通过。', USER_ERRORS.setupComplete[1]],
   'userError.modelUnavailable': ['{block} 的模型不可用：{error}', USER_ERRORS.modelUnavailable[1]],
