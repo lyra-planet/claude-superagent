@@ -11,6 +11,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "build:panel": "esbuild panel=src/client/main.tsx panel=src/client/panel.css index=src/client/index.html --bundle --minify --format=esm --target=es2022 --loader:.html=copy --outdir=lib/panel --log-level=warning",
     "check": "npm run typecheck && npm test"
   },
   "dependencies": {
@@ -21,6 +22,12 @@
   },
   "devDependencies": {
     "@types/node": "22.20.0",
+    "@types/react": "18.3.28",
+    "@types/react-dom": "18.3.7",
+    "esbuild": "0.28.2",
+    "jsdom": "29.1.1",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
     "typescript": "6.0.3",
     "vitest": "4.1.8"
   }

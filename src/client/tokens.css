@@ -1,0 +1,18 @@
+/* The design tokens client.css reads, which DeepSeek Harness defined upstream, for light and dark; then the page around the panel. */
+:root { color-scheme: light dark; --ds-font-family-code: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; --dsw-static-neutral-bluish-00: #ffffff; --dsw-mask-blur: blur(2px); }
+:root { --dsw-alias-bg-base: #f9fafb; --dsw-alias-bg-layer-1: #ffffff; --dsw-alias-bg-layer-2: #ffffff; --dsw-alias-bg-layer-3: #ffffff; --dsw-alias-bg-module-platform: #f0f2f5; --dsw-alias-bg-mask-1: rgba(17, 24, 39, 0.36); }
+:root { --dsw-alias-label-primary: #1b1f24; --dsw-alias-label-secondary: #3f4650; --dsw-alias-label-tertiary: #59616c; --dsw-alias-label-caption: #68707b; --dsw-alias-label-dimmed: #9aa1aa; --dsw-alias-label-primary-foreground: #ffffff; }
+:root { --dsw-alias-border-l2: #e6e8eb; --dsw-alias-border-l3: #d5d9de; --dsw-alias-border-l4: #c3c8cf; --dsw-alias-interactive-bg-hover: rgba(17, 24, 39, 0.05); --dsw-alias-interactive-bg-active: rgba(17, 24, 39, 0.09); }
+:root { --dsw-alias-brand-primary: #2459d6; --dsw-alias-link: #2459d6; --dsw-alias-button-primary-fill: #2459d6; --dsw-alias-button-primary-hover: #1d4bb8; --dsw-alias-button-ghost-active-fill: rgba(36, 89, 214, 0.08); --dsw-alias-button-ghost-active-border: rgba(36, 89, 214, 0.4); }
+:root { --dsw-alias-state-success-primary: #1a7f4b; --dsw-alias-state-warn-primary: #a85a00; --dsw-alias-state-error-primary: #c92a2a; --dsw-alias-state-business-primary: #2163c9; --dsw-alias-state-idle-primary: #9aa1aa; }
+:root { --dsw-alias-tooltip-bg: #262b31; --dsw-alias-toast-bg: #262b31; --dsw-elevation-soft: 0 1px 2px rgba(17, 24, 39, 0.12); --dsw-elevation-prominent: 0 0 0 0.5px rgba(17, 24, 39, 0.08), 0 10px 32px rgba(17, 24, 39, 0.14); --dsw-shadow-lv3: 0 8px 24px rgba(17, 24, 39, 0.22); }
+@media (prefers-color-scheme: dark) {
+  :root { --dsw-alias-bg-base: #131518; --dsw-alias-bg-layer-1: #1a1d21; --dsw-alias-bg-layer-2: #1f2227; --dsw-alias-bg-layer-3: #2a2e34; --dsw-alias-bg-module-platform: #23272c; --dsw-alias-bg-mask-1: rgba(0, 0, 0, 0.56); }
+  :root { --dsw-alias-label-primary: #e8eaed; --dsw-alias-label-secondary: #c4c9d0; --dsw-alias-label-tertiary: #a3aab3; --dsw-alias-label-caption: #949ba5; --dsw-alias-label-dimmed: #6c737c; --dsw-alias-label-primary-foreground: #ffffff; }
+  :root { --dsw-alias-border-l2: #2b2f35; --dsw-alias-border-l3: #3a3f46; --dsw-alias-border-l4: #4a5058; --dsw-alias-interactive-bg-hover: rgba(255, 255, 255, 0.06); --dsw-alias-interactive-bg-active: rgba(255, 255, 255, 0.1); }
+  :root { --dsw-alias-brand-primary: #6d9bff; --dsw-alias-link: #86adff; --dsw-alias-button-primary-fill: #2f66de; --dsw-alias-button-primary-hover: #3b73ec; --dsw-alias-button-ghost-active-fill: rgba(109, 155, 255, 0.14); --dsw-alias-button-ghost-active-border: rgba(109, 155, 255, 0.45); }
+  :root { --dsw-alias-state-success-primary: #4cc47f; --dsw-alias-state-warn-primary: #f0a53a; --dsw-alias-state-error-primary: #ff7b72; --dsw-alias-state-business-primary: #6aa8ff; --dsw-alias-state-idle-primary: #6c737c; }
+  :root { --dsw-alias-tooltip-bg: #3a3f46; --dsw-alias-toast-bg: #33383f; --dsw-elevation-soft: 0 1px 2px rgba(0, 0, 0, 0.45); --dsw-elevation-prominent: 0 0 0 0.5px rgba(255, 255, 255, 0.08), 0 10px 32px rgba(0, 0, 0, 0.5); --dsw-shadow-lv3: 0 8px 24px rgba(0, 0, 0, 0.55); }
+}
+html, body, #root { height: 100%; margin: 0; }
+body { background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-primary); font-family: system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif; font-size: 14px; line-height: 22px; -webkit-font-smoothing: antialiased; }
