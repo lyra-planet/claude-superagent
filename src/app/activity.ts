@@ -10,12 +10,17 @@ export interface ActivityLine {
   error?: true
 }
 const TEXT_CHARS = 280, INPUT_CHARS = 120
-const oneLine = (text: string, limit: number) => { const flat = text.replace(/\s+/g, ' ').trim(); return flat.length > limit ? `${flat.slice(0, limit)}…` : flat }
+const oneLine = (text: string, limit: number) => {
+  const flat = text.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '$1 ($2)').replace(/\s+/g, ' ').trim()
+  return flat.length > limit ? `${flat.slice(0, limit)}…` : flat
+}
+/** A long absolute path as its last three segments, as a person reads where in the work it is. */
+const shortPath = (path: string) => { const parts = path.split('/'); return path.startsWith('/') && parts.length > 4 ? `…/${parts.slice(-3).join('/')}` : path }
 /** What a tool call works on: the input field a person reads it by, as Claude Code's terminal names it. */
 function subject(name: string, input: Record<string, unknown>): string {
   for (const field of ['command', 'file_path', 'pattern', 'url', 'query', 'description', 'skill', 'state', 'kind']) {
     const value = input[field]
-    if (typeof value === 'string' && value) return oneLine(value, INPUT_CHARS)
+    if (typeof value === 'string' && value) return oneLine(field === 'file_path' ? shortPath(value) : value, INPUT_CHARS)
   }
   return name.startsWith('mcp__') ? '' : oneLine(JSON.stringify(input), INPUT_CHARS)
 }
@@ -25,7 +30,7 @@ const toolName = (name: string) => name.replace(/^mcp__[^_]+(?:_[^_]+)*?__/, '')
 /** The lines of one SDK message, or of one message of a Session's history. */
 export function activityOf(message: unknown): ActivityLine[] {
   const m = message as { type?: string; subtype?: string; message?: { content?: unknown }; result?: unknown; is_error?: boolean; description?: string
-    status?: string; task_id?: string; isReplay?: boolean; parent_tool_use_id?: string | null }
+    status?: string; task_id?: string; summary?: string; isReplay?: boolean; parent_tool_use_id?: string | null }
   // A subagent's own steps are its business; its start and end show as a task.
   if (m.parent_tool_use_id) return []
   if (m.type === 'assistant' && Array.isArray(m.message?.content)) {
@@ -47,6 +52,8 @@ export function activityOf(message: unknown): ActivityLine[] {
     return [{ kind: 'turn', text: failed ? `turn ended: ${m.subtype}` : 'turn ended', ...failed ? { error: true as const } : {} }]
   }
   if (m.type === 'system' && m.subtype === 'task_started') return [{ kind: 'task', text: `started ${oneLine(m.description ?? m.task_id ?? '', INPUT_CHARS)}` }]
-  if (m.type === 'system' && m.subtype === 'task_notification') return [{ kind: 'task', text: `${m.task_id ?? 'task'} ${m.status ?? 'ended'}` }]
+  if (m.type === 'system' && m.subtype === 'task_notification') {
+    return [{ kind: 'task', text: `${m.status ?? 'ended'} ${oneLine(m.summary ?? m.description ?? m.task_id ?? 'a task', INPUT_CHARS)}` }]
+  }
   return []
 }

@@ -4,7 +4,7 @@
  * with the worker's git, and once the person leaves, the service takes it back. A fork leaves the worker alone.
  */
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { delimiter, dirname, join } from 'node:path'
 
@@ -29,8 +29,23 @@ export function claudeBinary(): string {
   }
   return 'claude'
 }
+/**
+ * Claude Code's first start in the service's configuration directory walks a person through its onboarding; the directory is
+ * the service's, so it counts as done. Whether to trust the ticket's folder, which loads the repository's own settings, stays
+ * the person's to answer.
+ */
+export function skipOnboarding(claudeConfigDir: string): void {
+  const file = join(claudeConfigDir, '.claude.json')
+  let config: Record<string, unknown> = {}
+  try { config = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown> } catch { /* None yet. */ }
+  if (config.hasCompletedOnboarding) return
+  const temporary = `${file}.${process.pid}.tmp`
+  writeFileSync(temporary, JSON.stringify({ ...config, hasCompletedOnboarding: true }, null, 2), { mode: 0o600 })
+  renameSync(temporary, file)
+}
 /** Run Claude Code on a held Session in the foreground of this terminal until the person leaves it; resolves with its exit code. */
 export function runClaude(held: Held, fork: boolean): Promise<number> {
+  skipOnboarding(held.claudeConfigDir)
   const { PATH_PREFIX, ...env } = held.env
   const inherited = Object.fromEntries(Object.entries(process.env).filter(([name]) => !SESSION_VARIABLES.test(name)))
   const path = [PATH_PREFIX, inherited.PATH].filter(Boolean).join(delimiter)
@@ -45,4 +60,19 @@ export function runClaude(held: Held, fork: boolean): Promise<number> {
     child.once('error', error => { process.off('SIGINT', ignore); reject(error) })
     child.once('exit', code => { process.off('SIGINT', ignore); resolve(code ?? 1) })
   })
+}
+/**
+ * Drop what the terminal still sends after Claude Code left, such as its answers to the queries Claude Code made of it, so the
+ * next screen does not read them as typing.
+ */
+export async function drainInput(ms = 200): Promise<void> {
+  if (!process.stdin.isTTY) return
+  const drop = () => {}
+  process.stdin.setRawMode(true)
+  process.stdin.on('data', drop)
+  process.stdin.resume()
+  await new Promise(resolve => setTimeout(resolve, ms))
+  process.stdin.off('data', drop)
+  process.stdin.pause()
+  process.stdin.setRawMode(false)
 }

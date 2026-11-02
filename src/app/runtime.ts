@@ -131,6 +131,12 @@ export class Runtime implements SourceHost {
       const setup = this.setup = new Setup({ subprocess, logger, machine, lifetime: this.lifetime, restart: options.restart })
       const deployed = () => setup.configured() ? environmentOf({ deployment: setup.deployment, sources: this.sources, settings: store.settings() }) : undefined
       const prompts = this.prompts = new Prompts(store, () => machine.promptMaxChars.get(), deployed, () => setup.configured() && !!setup.deployment.feishu)
+      // The terminal hears of every change of a ticket once it is committed.
+      store.ticketSaved = id => {
+        if (!this.bus.listenerCount('event')) return
+        const row = this.terminalTicket(id)
+        if (row) this.bus.emit('event', { type: 'ticket', ticket: row })
+      }
       const masterId = this.masterId = store.get(KV.runtime.masterId) ?? stableUuid('router', machine.stateDir)
       store.set(KV.runtime.masterId, masterId)
       const commands = this.commands = new Commands(() => setup.deployment, setup.commandEnvironment, this.lifetime)
@@ -178,12 +184,6 @@ export class Runtime implements SourceHost {
           const followed = !this.quiet && (event.type === 'trigger.received' || event.type === 'ticket.resumed' || event.type === 'trigger.followup')
           const followup = followed ? followupNotice(store, sources, event.data.triggerId) : undefined
           if (followup) sessions.relay(followup.id, followup.text)
-          // The terminal hears of a ticket's change once it is committed.
-          const changed = (event.data as { ticketId?: unknown }).ticketId
-          if (typeof changed === 'string' && this.bus.listenerCount('event')) store.afterCommit(() => {
-            const row = this.terminalTicket(changed)
-            if (row) this.bus.emit('event', { type: 'ticket', ticket: row })
-          })
           const ended = event.type === 'ticket.ended' ? store.tickets.get(event.data.ticketId) : undefined
           if (ended && setup.configured()) {
             const request = store.triggers.get(ended.origin.triggerId)?.text ?? ''

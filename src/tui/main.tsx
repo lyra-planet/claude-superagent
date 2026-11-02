@@ -4,7 +4,7 @@
  */
 import { render } from 'ink'
 import { createInterface } from 'node:readline/promises'
-import { runClaude, type Held } from '../open.ts'
+import { drainInput, runClaude, type Held } from '../open.ts'
 import { ServiceClient } from '../remote.ts'
 import { startDetached, stopService } from '../service.ts'
 import { App, type Exit } from './app.tsx'
@@ -37,6 +37,7 @@ export async function main({ stateDir, port, foreground }: Options): Promise<voi
       return
     }
     resumed = { ...conversation ? { conversation } : {}, note: await open(client, exit) }
+    await drainInput()
   }
 }
 

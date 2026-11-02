@@ -53,7 +53,9 @@ it('hands a worker\'s Session to a person once its turn ended, holds what reache
   // The worker's turn goes on until it ends by itself.
   expect(worker.query).toBeDefined()
   worker.end({ result: 'Working on it.' })
-  expect((await held).body).toEqual({ sessionId: one.sessionId, cwd: one.ticket.execution!.directory, claudeConfigDir: expect.any(String), stopped: 0 })
+  expect((await held).body).toEqual({ sessionId: one.sessionId, cwd: one.ticket.execution!.directory, claudeConfigDir: expect.any(String), stopped: 0,
+    working: false, held: true,
+    env: expect.objectContaining({ GIT_CONFIG_GLOBAL: expect.stringContaining('worker-gitconfig'), GIT_CONFIG_KEY_0: 'user.name', GIT_CONFIG_VALUE_0: 'agent-bot' }) })
   expect(worker.query).toBeUndefined()
   expect(h.runtime.terminalTicket(one.ticket.id)!.held).toBe(true)
   expect(h.runtime.executor.activeCount()).toBe(0)
@@ -76,4 +78,14 @@ it('cuts the worker\'s turn short when the person asks for the Session now', asy
   await local('POST', `/local/tickets/${one.ticket.id}/hold`, { now: true })
   expect(query.interrupt).toHaveBeenCalled()
   expect(worker.query).toBeUndefined()
+})
+
+it('streams each committed change of a ticket, such as its worker\'s report', async () => {
+  const events = listen()
+  const one = await h.acceptedTicket(feishu('1', '@bot 修一'))
+  const before = events.filter(event => event.type === 'ticket').length
+  await h.runTool(one.ticket.id, 'orchestrator_report', { state: 'ready', summary: 'Fixed it in PR #3.' })
+  await waitUntil(() => events.filter(event => event.type === 'ticket').length > before)
+  // A ready report without a pull request ends the ticket, as upstream's core does.
+  expect(events.filter(event => event.type === 'ticket').at(-1)).toMatchObject({ ticket: { id: one.ticket.id, summary: 'Fixed it in PR #3.' } })
 })

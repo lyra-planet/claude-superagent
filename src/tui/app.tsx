@@ -3,7 +3,7 @@
  * A message goes to the agent in the current conversation; the agent's replies, its tickets' changes and what their workers do
  * arrive live. Commands start with `/` (see `COMMANDS`).
  */
-import { Box, Static, Text, useApp, useInput } from 'ink'
+import { Box, Static, Text, useApp, useInput, useStdout } from 'ink'
 import { useEffect, useRef, useState } from 'react'
 import type { LiveEvent, ServiceClient, TerminalTicket } from '../remote.ts'
 import { COMMANDS, activityEntries, entry, messageEntry, parse, short, stageText, suggestions, ticketEntry, ticketMark, ticketNamed, type Entry } from './model.ts'
@@ -21,6 +21,9 @@ interface Status { connected: boolean; running: number; queued: number; maxWorke
 
 export function App({ client, stateDir, resumed, onExit }: AppProps) {
   const { exit } = useApp()
+  const { stdout } = useStdout()
+  // A line that fills the terminal to its last column breaks a cell early in some terminals: keep one free.
+  const width = Math.max(40, (stdout.columns || 100) - 1)
   const [entries, setEntries] = useState<Entry[]>(() => resumed ? [entry('info', resumed.note)] : [])
   const [conversation, setConversation] = useState<string | undefined>(resumed?.conversation)
   const [tickets, setTickets] = useState<TerminalTicket[]>([])
@@ -36,6 +39,8 @@ export function App({ client, stateDir, resumed, onExit }: AppProps) {
   const current = useRef({ conversation, tickets, activity })
   current.current = { conversation, tickets, activity }
   const marks = useRef(new Map<string, string>())
+  /** What the person sent and the service has not echoed yet: printed when sent, so its echo is not printed again. */
+  const sent = useRef<string[]>([])
   const print = (...items: Entry[]) => { setEntries(before => [...before, ...items]) }
   const fail = (error: unknown) => { print(entry('error', error instanceof Error ? error.message : String(error))) }
   const leave = (how: Exit) => { onExit(how, current.current.conversation); exit() }
@@ -72,6 +77,8 @@ export function App({ client, stateDir, resumed, onExit }: AppProps) {
   function onEvent(event: LiveEvent): void {
     const { conversation: here, tickets: known, activity: showing } = current.current
     if (event.type === 'message') {
+      const echo = !event.message.agent ? sent.current.indexOf(event.message.text) : -1
+      if (echo >= 0) { sent.current.splice(echo, 1); return }
       if (event.conversation === here) print(messageEntry(event.message))
       else if (event.message.agent) print(entry('info', `A reply in conversation ${event.conversation}: /thread ${event.conversation} to read it.`))
       return
@@ -94,6 +101,7 @@ export function App({ client, stateDir, resumed, onExit }: AppProps) {
     if (!command) return
     if (command.kind === 'message') {
       print(entry('person', command.text))
+      sent.current.push(command.text)
       setBusy('handing it to the agent')
       try { const asked = await client.ask(command.text, conversation); setConversation(asked.conversation) } catch (error) { fail(error) } finally { setBusy(undefined) }
       return
@@ -158,15 +166,14 @@ export function App({ client, stateDir, resumed, onExit }: AppProps) {
     }
   }
 
+  function submit(text: string): void {
+    setInput(''); setCursor(0); recall.current = -1
+    if (text.trim()) history.current = [text, ...history.current.filter(item => item !== text)].slice(0, 100)
+    void run(text).catch(fail)
+  }
   useInput((typed, key) => {
     if (key.ctrl && typed === 'c') { if (input) { setInput(''); setCursor(0) } else leave({ kind: 'quit' }); return }
-    if (key.return) {
-      const text = input
-      setInput(''); setCursor(0); recall.current = -1
-      if (text.trim()) history.current = [text, ...history.current.filter(item => item !== text)].slice(0, 100)
-      void run(text).catch(fail)
-      return
-    }
+    if (key.return) { submit(input); return }
     if (key.escape) { setInput(''); setCursor(0); return }
     if (key.upArrow || key.downArrow) {
       const next = Math.max(-1, Math.min(history.current.length - 1, recall.current + (key.upArrow ? 1 : -1)))
@@ -188,14 +195,19 @@ export function App({ client, stateDir, resumed, onExit }: AppProps) {
       setInput(input.slice(0, cursor - 1) + input.slice(cursor)); setCursor(cursor - 1); return
     }
     if (key.ctrl || key.meta || key.tab || !typed) return
-    // A paste arrives as one piece: its line breaks become spaces, as one message.
-    const text = typed.replace(/\r\n?|\n/g, ' ')
-    setInput(input.slice(0, cursor) + text + input.slice(cursor)); setCursor(cursor + text.length)
+    // A terminal's answer to a query (such as `P>|tmux 3.4`) is no typing.
+    if (/^P[>=]\|/.test(typed) || typed.includes('\x1b')) return
+    // Typing fast or pasting arrives as one piece: its line breaks become spaces, and a break that ends it sends what was typed.
+    const ends = /[\r\n]$/.test(typed)
+    const text = typed.replace(/[\r\n]+$/, '').replace(/\r\n?|\n/g, ' ')
+    const next = input.slice(0, cursor) + text + input.slice(cursor)
+    if (ends) { submit(next); return }
+    setInput(next); setCursor(cursor + text.length)
   })
 
   const hints = suggestions(input)
   return <>
-    <Static items={entries}>{item => <Line key={item.id} item={item} />}</Static>
+    <Static items={entries}>{item => <Box key={item.id} width={width}><Line item={item} /></Box>}</Static>
     <Box flexDirection="column" marginTop={1}>
       {busy && <Text color="magenta">✻ {busy}…</Text>}
       <Box borderStyle="round" borderColor="gray" paddingX={1}>
@@ -215,18 +227,25 @@ export function App({ client, stateDir, resumed, onExit }: AppProps) {
   </>
 }
 
-/** One transcript line, colored as Claude Code colors its own; one Text each, so a wide glyph does not pad its line. */
+/**
+ * One transcript line, colored as Claude Code colors its own; one Text each. Its marks are glyphs every terminal draws one cell
+ * wide: tmux draws Claude Code's ⏺ two cells wide where Ink counts one, which breaks lines a cell early.
+ */
 function Line({ item }: { item: Entry }) {
   switch (item.kind) {
     case 'header': return <Box marginBottom={1}><Text><Text color="magenta">✻</Text> <Text bold>{item.text}</Text></Text></Box>
-    case 'person': return <Box marginTop={1}><Text><Text color="gray">{'>'}</Text> {item.text}</Text></Box>
-    case 'agent': {
-      const color = item.tone === 'acknowledgement' ? 'cyan' : item.tone === 'question' ? 'yellow' : 'green'
-      return <Box marginTop={1}><Text><Text color={color}>⏺</Text> {item.text}</Text></Box>
-    }
-    case 'ticket': return <Text color={item.tone === 'ended' ? 'gray' : item.tone === 'person' || item.tone === 'held' ? 'yellow' : 'blue'}>  ● {item.text}</Text>
-    case 'activity': return <Text color={item.tone === 'error' ? 'red' : 'gray'}>  ⎿ {item.text}</Text>
+    case 'person': return <Marked mark=">" color="gray" text={item.text} space />
+    case 'agent': return <Marked mark="●" color={item.tone === 'acknowledgement' ? 'cyan' : item.tone === 'question' ? 'yellow' : 'green'} text={item.text} space />
+    case 'ticket': return <Marked mark="  ◆" color={item.tone === 'ended' ? 'gray' : item.tone === 'person' || item.tone === 'held' ? 'yellow' : 'blue'} text={item.text} tinted />
+    case 'activity': return <Marked mark="  ⎿" color={item.tone === 'error' ? 'red' : 'gray'} text={item.text} tinted />
     case 'error': return <Text color="red">  {item.text}</Text>
     default: return <Text color="gray">  {item.text}</Text>
   }
+}
+/** A mark and its text in two columns, so a wrapped line goes on under the text as in Claude Code's terminal. */
+function Marked({ mark, color, text, space, tinted }: { mark: string; color: string; text: string; space?: boolean; tinted?: boolean }) {
+  return <Box marginTop={space ? 1 : 0}>
+    <Box width={mark.length + 1} flexShrink={0}><Text color={color}>{mark}</Text></Box>
+    <Text {...tinted ? { color } : {}}>{text}</Text>
+  </Box>
 }
