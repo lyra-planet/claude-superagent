@@ -30,6 +30,8 @@ const memoryLedger = (): SessionLedger => { let list: QueuedMessage[] = []; retu
 export interface BackgroundTask { id: string; type: string; description: string }
 export const subagent = (task: BackgroundTask): boolean => task.type === 'local_agent'
 type Uuid = `${string}-${string}-${string}-${string}-${string}`
+/** How long a finished background task may take to start the turn it wakes the Session for, before it counts as waking none. */
+const WAKE_GRACE_MS = 5000
 
 /** A prompt stream the host pushes into while the query runs. */
 class Inbox implements AsyncIterable<SDKUserMessage> {
@@ -89,6 +91,10 @@ export class ClaudeSession {
   private state: 'idle' | 'running' | 'requires_action' = 'idle'
   private lastResult?: SDKResultMessage
   private readonly tasks = new Map<string, BackgroundTask>()
+  /** Tasks the host stops, whose end wakes no turn. */
+  private readonly stopping = new Set<string>()
+  /** A finished task is starting a turn: Claude Code says it ended before it says the Session runs. */
+  private waking?: ReturnType<typeof setTimeout>
   /** Pushed into the running query and not taken yet; `querying` holds those that start or continue a turn. */
   private readonly queued = new Set<string>()
   private readonly querying = new Set<string>()
@@ -101,7 +107,7 @@ export class ClaudeSession {
   /** Whether the query runs. */
   get open(): boolean { return this.running !== undefined }
   /** Whether a turn runs or a message waits to start one. */
-  get working(): boolean { return this.open && (this.state !== 'idle' || this.querying.size > 0) }
+  get working(): boolean { return this.open && (this.state !== 'idle' || this.querying.size > 0 || this.waking !== undefined) }
   /** Whether a turn runs, one waits, or background work a turn started runs; a Session that is not open is not busy. */
   get busy(): boolean { return this.working || (this.open && this.tasks.size > 0) }
   /** The background tasks that run, by task id. */
@@ -167,7 +173,11 @@ export class ClaudeSession {
   /** Cut the turn that runs short; messages it had not taken stay queued and run next. */
   async interrupt(): Promise<void> { await this.running?.interrupt().catch(() => undefined) }
   /** Stop a background task of the Session. */
-  async stopTask(taskId: string): Promise<void> { await this.running?.stopTask(taskId).catch(() => undefined) }
+  async stopTask(taskId: string): Promise<void> {
+    if (!this.running) return
+    this.stopping.add(taskId)
+    await this.running.stopTask(taskId).catch(() => { this.stopping.delete(taskId) })
+  }
   /**
    * End the query: its turn stops, its background tasks with it. Messages handed over and not taken stay in the ledger (see
    * `forget`). Waits until the query has ended; a start that runs meanwhile finishes first.
@@ -188,6 +198,12 @@ export class ClaudeSession {
   /** The query's handle while it runs, for the controls this class does not wrap. */
   get query(): Query | undefined { return this.running }
 
+  /** Mark the Session as starting a turn a finished task wakes it for, or no longer; one that never starts counts as none. */
+  private wake(waking: boolean): void {
+    clearTimeout(this.waking)
+    this.waking = waking ? setTimeout(() => { this.waking = undefined; this.events.tasks?.(this) }, WAKE_GRACE_MS) : undefined
+    this.waking?.unref?.()
+  }
   private push(message: QueuedMessage): void {
     const fields = message.delivery === 'inject' ? { shouldQuery: false } : { priority: message.delivery }
     this.inbox!.push({ type: 'user', message: { role: 'user', content: message.text }, parent_tool_use_id: null, uuid: message.uuid as Uuid, ...fields })
@@ -217,6 +233,7 @@ export class ClaudeSession {
     finally {
       if (this.running === running) {
         this.running = undefined; this.inbox = undefined; this.state = 'idle'; this.tasks.clear(); this.queued.clear(); this.querying.clear()
+        this.stopping.clear(); this.wake(false)
       }
       for (const resolve of this.idleWaiters.splice(0)) resolve()
       this.events.ended?.(this, failure)
@@ -224,7 +241,7 @@ export class ClaudeSession {
   }
   /** Update the Session's state from one message; say what changed. */
   private observe(message: SDKMessage): 'running' | 'idle' | 'tasks' | { took: string } | undefined {
-    const m = message as { type: string; subtype?: string; isReplay?: boolean; uuid?: string; state?: string
+    const m = message as { type: string; subtype?: string; isReplay?: boolean; uuid?: string; state?: string; task_id?: string
       tasks?: { task_id: string; task_type: string; description: string; ambient?: boolean }[] }
     if (m.type === 'result') { this.lastResult = message as SDKResultMessage; return undefined }
     if (m.type === 'user' && m.isReplay && m.uuid && this.queued.has(m.uuid)) {
@@ -233,9 +250,15 @@ export class ClaudeSession {
       return { took: m.uuid }
     }
     if (m.type !== 'system') return undefined
+    if (m.subtype === 'task_notification' && m.task_id) {
+      // A task that ended by itself starts a turn of an idle Session, which Claude Code says only after.
+      if (!this.stopping.delete(m.task_id) && this.state === 'idle') this.wake(true)
+      return undefined
+    }
     if (m.subtype === 'session_state_changed') {
       const was = this.state
       this.state = m.state === 'running' || m.state === 'requires_action' ? m.state : 'idle'
+      this.wake(false)
       if (this.state !== 'idle') return was === 'idle' ? 'running' : undefined
       // A message pushed as the turn ended starts the next one: no turn-over yet.
       return this.querying.size ? undefined : 'idle'
