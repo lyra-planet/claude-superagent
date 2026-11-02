@@ -17,9 +17,11 @@ Source: https://github.com/deepseek-ai/dsh-superagent-prototype, commit `6337fc8
 | `src/sources/*.ts` | Copied; a Source is a `SourcePlugin` instead of a DeepSeek Harness plugin, and Feishu images are MCP image content |
 | `src/executor/common.ts` | Upstream `src/executor/dsh.ts` without its executor class; worker Session ids are UUIDs |
 | `prompts/`, `skills/`, `locale/` | Copied; the text names this host where it named DeepSeek Harness |
+| `src/client/*` | Copied; it runs as a page of its own instead of a DeepSeek Harness client plugin (`main.tsx`, `host.tsx`, `tokens.css` and `index.html` replace the plugin entry and the host's design tokens), its API calls are relative to the page, Session navigation is gone, the Deployment page is read-only, and the Execution settings gained the sandbox |
 | `tests/core-engine.spec.ts`, `tests/stage.spec.ts` | Copied unchanged |
+| The other `tests/*.spec.ts(x)` named after upstream's, and `tests/fixtures/` | Copied; adapted where the host changed, as their commits say |
 
-Everything else (`src/app/runtime.ts`, `sessions.ts`, `session.ts`, `hooks.ts`, `models.ts`, `src/executor/claude.ts`, `src/sources/local.ts`, `src/cli.ts`, `src/infra/log.ts`, `poc/`, `docs/`, the tests other than the two above) is this project's own.
+Everything else (`src/app/runtime.ts`, `sessions.ts`, `session.ts`, `hooks.ts`, `models.ts`, `src/executor/claude.ts`, `src/sources/local.ts`, `src/cli.ts`, `src/infra/log.ts`, `poc/`, `docs/`, `src/app/panel.ts`, and the tests upstream does not have: `hooks`, `local`, `paths`, `panel-handler`) is this project's own.
 
 The files from upstream are covered by its license:
 
