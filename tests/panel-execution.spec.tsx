@@ -71,9 +71,10 @@ it('shows a Ticket with its stage, its Mandate details with the Trigger and Deci
   await click(zh['term.environment'])
   expect(all('.dt-disclosure-body .dt-table tr').map(row => row.textContent)).toEqual(['DSH_SUPERAGENT_DIR/w/t1',
     'DSH_SUPERAGENT_GITHUB_NUMBER—'])
-  // The panel cannot open the Executor Session, a Claude Code Session; its identifiers name it.
+  // Adapted: a browser cannot open the Executor Session, a Claude Code Session; its identifiers name it, beside the command that
+  // opens it in Claude Code, as upstream's panel opened it in DSH's UI.
   await click(zh.identifiers)
-  expect(all('.dt-disclosure-body .dt-kv dd').map(item => item.textContent)).toEqual(['t1', '/w/t1', 'worker-t1'])
+  expect(all('.dt-disclosure-body .dt-kv dd').map(item => item.textContent)).toEqual(['t1', '/w/t1', 'worker-t1', 'claude-superagent open t1 '])
   await click(document.querySelector<HTMLElement>('.dt-trigger-link')!)
   expect(tab(zh['tab.trigger']).getAttribute('aria-selected')).toBe('true')
 })

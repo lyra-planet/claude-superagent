@@ -1,7 +1,7 @@
 /** Ticket detail page: stage and actions, Mandate details, undelivered/delivered Inputs, subscribed Threads, and Assignments. */
 import { useState, type ReactNode } from 'react'
 import { ApiError, usePoll, type TicketPageView } from './api.ts'
-import { DisclosureRow, Dot, Icon, Tag, type IconName } from './controls.tsx'
+import { DisclosureRow, Dot, Icon, InfoTip, Tag, type IconName } from './controls.tsx'
 import { decisionMark, reportDot, ticketMark } from './marks.ts'
 import { usePanel } from './provider.tsx'
 import { settingsRoute } from './route.ts'
@@ -179,11 +179,13 @@ export function TicketPage({ id }: { id: string }) {
         { count: data.inputs.length - undelivered.length })}>
         <InputList inputs={data.inputs.filter(input => input.delivered)} />
       </Details>}
-      {/* The Executor Session is a Claude Code Session: its id and directory name its transcript, which the panel cannot open. */}
+      {/* The Executor Session is a Claude Code Session, which a browser cannot open: the command line opens it in Claude Code,
+          as upstream's panel opened it in DSH's UI. */}
       <Details icon="hash" title={t('identifiers')}>
         <KeyValues rows={[[t('ticketId'), <span className="dt-mono">{data.id}</span>], [t('executionDirectory'), <span
           className="dt-mono">{data.directory ?? t('empty')}</span>],
-          ...data.sessionId ? [[t('executorSessionId'), <span className="dt-mono">{data.sessionId}</span>] as [string, ReactNode]] : [],
+          ...data.sessionId ? [[t('executorSessionId'), <span className="dt-mono">{data.sessionId}</span>] as [string, ReactNode],
+            [t('openSession'), <span><span className="dt-mono">claude-superagent open {data.id.slice(0, 8)}</span> <InfoTip text={t('openSessionHint')} /></span>] as [string, ReactNode]] : [],
           ...legacy && data.mandate.scope ? [[t('legacyAssignment'), <span
             className="dt-mono dt-clamp">{data.mandate.scope}</span>] as [string, ReactNode]] : []]} />
       </Details>

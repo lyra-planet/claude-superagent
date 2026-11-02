@@ -378,6 +378,8 @@ const TEXT = {
   blockedCommandsHint: ['执行器 Session 的命令行里出现这些命令名（含绝对路径）时直接拒绝，例如用你个人账号登录的 CLI。换个写法拼出命令名就拦不住，所以不是安全边界。gh、git、lark-cli 不能禁止。', 'Command names an Executor Session\'s command line may not contain, by name or by path, such as a CLI signed in to your own account. A command line that builds the name another way still runs it, so this is not a security boundary. gh, git and lark-cli cannot be blocked.'],
   blockedCommandsNone: ['以空格分隔；没有', 'Separated by spaces; none'],
   sandbox: ['Bash 沙箱', 'Bash sandbox'],
+  openSession: ['在 Claude Code 里打开', 'Open in Claude Code'],
+  openSessionHint: ['在这台机器的终端运行这条命令：worker 本轮结束后把 Session 交给你，在 Claude Code 里接着干；你退出后 worker 拿回 Session，并在下一轮读到你做了什么。加 --fork 打开一份副本，不打扰 worker；终端界面里用 /open。', 'Run it in a terminal on this machine: once the worker\'s turn ends, its Session is yours to work in, in Claude Code; when you leave, the worker has it again and reads what you did at its next turn. --fork opens a copy and leaves the worker alone; in the interactive terminal, /open.'],
   sandboxHint: ['执行器的 Bash 命令在 Claude Code 的沙箱里跑：开启时文件和网络都受限；容器里挂不上 /proc 时选弱化（文件和网络仍受限，其他进程的 /proc 可见）；关闭时以服务的系统用户直接运行。无论哪种，钩子都照样拦截。',
     'Workers\' Bash commands run in Claude Code\'s sandbox: on keeps files and network in; weak is for containers that cannot mount /proc (files and network stay in, other processes\' /proc does not); off runs them as the service\'s OS user. The hooks apply in every mode.'],
   'sandbox.on': ['开启', 'On'],
