@@ -68,6 +68,8 @@ git clone https://github.com/acme/widgets ~/src/widgets     # the checkout each 
 
 `init` writes `~/.claude-superagent` (or `--state <dir>`): `config.json` with the port (3082) and the database with the settings. Everything else is a setting in the panel at `http://127.0.0.1:3082/`: Sources, who may ask, proactive rules, the prepare command, the worker model and concurrency, prompts.
 
+The service listens on 127.0.0.1 only. To open the panel from another machine, forward the port (`ssh -L 3082:127.0.0.1:3082 <host>`), or put it behind a gateway that serves it under a path, such as code-server's `/proxy/3082/`, and allow the Host the gateway forwards: `init --allow-host <host>`, or `allowedHosts` in `config.json` and a restart. A request for any other Host gets a 403 that names it, and the log says the same once.
+
 Hand it work from the terminal:
 
 ```sh

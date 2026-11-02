@@ -4,7 +4,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { isAbsolute, join, resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { ConfigSchema, machineOf, type DeploymentConfig } from './deployment.ts'
 import { consoleLogger } from './infra/log.ts'
@@ -20,6 +20,7 @@ const USAGE = `claude-superagent <command> [--state <dir>]
             --clone <path>        local clone of the repository each ticket checks out from
             --operator <name>     your name for requests from this terminal (default: operator)
             --port <n>            port of the panel and API (default: 3082)
+            --allow-host <host>   a Host a gateway forwards the panel from, such as gw.example.com; repeatable
             --sandbox on|weak|off the workers' Bash sandbox (default: on)
             --mode off|observe|auto   proactive work (default: observe)
   start   Run the service in the foreground (Ctrl-C stops it)
@@ -29,7 +30,8 @@ const USAGE = `claude-superagent <command> [--state <dir>]
 `
 const { values: flags, positionals } = parseArgs({ allowPositionals: true, strict: true, options: {
   state: { type: 'string' }, repo: { type: 'string' }, gh: { type: 'string' }, clone: { type: 'string' }, operator: { type: 'string' },
-  port: { type: 'string' }, sandbox: { type: 'string' }, mode: { type: 'string' }, thread: { type: 'string' }, wait: { type: 'boolean' },
+  port: { type: 'string' }, 'allow-host': { type: 'string', multiple: true }, sandbox: { type: 'string' }, mode: { type: 'string' },
+  thread: { type: 'string' }, wait: { type: 'boolean' },
   help: { type: 'boolean', short: 'h' },
 } })
 const stateDir = resolve(flags.state ?? process.env.CLAUDE_SUPERAGENT_STATE ?? join(homedir(), '.claude-superagent'))
@@ -61,13 +63,14 @@ function init(): void {
   const clone = flags.clone ? resolve(flags.clone) : undefined
   if (clone && !existsSync(join(clone, '.git'))) fail(`${clone} is not a git clone`)
   const operator = flags.operator ?? 'operator'
-  const config = ConfigSchema.parse({ port: flags.port ? Number(flags.port) : undefined })
+  const config = ConfigSchema.parse({ port: flags.port ? Number(flags.port) : undefined, allowedHosts: flags['allow-host'] })
   mkdirSync(stateDir, { recursive: true, mode: 0o700 })
   writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 })
   const store = new Store(join(stateDir, 'orchestrator.sqlite'))
   try {
     store.saveSettings(SettingsSchema.parse({
-      sources: { github: { enabled: true, config: { repository, cli: isAbsolute(cli) ? cli : cli } }, local: { enabled: true, config: { operator } } },
+      // A Source the settings leave out counts as on, so Feishu, which needs a bot set up first, is written off.
+      sources: { github: { enabled: true, config: { repository, cli } }, local: { enabled: true, config: { operator } }, feishu: { enabled: false } },
       policy: { sources: { local: { allowed: [{ id: operator }] }, github: { allowed: [] } } },
       eval: { mode: flags.mode ?? 'observe' },
       executor: { sandbox: flags.sandbox ?? 'on', ...clone ? { prepare: prepareCommand(clone) } : {} },

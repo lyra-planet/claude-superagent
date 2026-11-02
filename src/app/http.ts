@@ -70,12 +70,19 @@ function json(res: ServerResponse, status: number, value: unknown): void {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }); res.end(JSON.stringify(value))
 }
 /**
- * Whether a request comes from the panel on this machine: its Host is the loopback port, or one of `allowedHosts`, such as
- * a gateway that forwards to it; it carries the panel's header, which a cross-site form cannot set; and any Origin is its own.
+ * Whether a Host names this machine: the loopback port, or one of `allowedHosts`, such as a gateway that forwards to it. Any
+ * other Host is a page that a DNS rebinding pointed at the port.
+ */
+export function allowedHost(host: string | undefined, port: number, allowedHosts: readonly string[] = []): boolean {
+  return host === `127.0.0.1:${port}` || host === `localhost:${port}` || allowedHosts.includes(host ?? '')
+}
+/**
+ * Whether a request comes from the panel on this machine: its Host is allowed (`allowedHost`); it carries the panel's header,
+ * which a cross-site form cannot set; and any Origin is its own.
  */
 export function sameOrigin(req: Pick<IncomingMessage, 'headers'>, port: number, allowedHosts: readonly string[] = []): boolean {
   const host = req.headers.host
-  if (host !== `127.0.0.1:${port}` && host !== `localhost:${port}` && !allowedHosts.includes(host ?? '')) return false
+  if (!allowedHost(host, port, allowedHosts)) return false
   return req.headers['x-orchestrator-request'] === '1' && (req.headers.origin === undefined || req.headers.origin === `http://${host}` || req.headers.origin === `https://${host}`)
 }
 /** Maps errors to HTTP status codes and structured payloads that the panel localizes in the interface language. */

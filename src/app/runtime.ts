@@ -28,7 +28,7 @@ import type { SessionRecord } from './context.ts'
 import { Effects } from './effects.ts'
 import { environmentOf, ticketEnvironment, type Variable } from './execution-environment.ts'
 import { workerHooks } from './hooks.ts'
-import { managementHandler, type HttpHost } from './http.ts'
+import { allowedHost, managementHandler, sameOrigin, type HttpHost } from './http.ts'
 import { candidateCard, repliedTo, sourceLink, type LinkHost } from './links.ts'
 import { catalogOf, type ModelCatalog } from './models.ts'
 import { eventNotice, followupNotice } from './notices.ts'
@@ -276,16 +276,22 @@ export class Runtime implements SourceHost {
   private listen(): Promise<void> {
     const api = managementHandler(this.httpHost())
     const local = this.local.handler()
-    const allowed = (req: IncomingMessage) => {
-      const host = req.headers.host ?? ''
-      return host === `127.0.0.1:${this.machine.port}` || host === `localhost:${this.machine.port}` || this.machine.allowedHosts.includes(host)
-    }
+    const { port, allowedHosts, stateDir } = this.machine
+    // A gateway forwards the browser's Host, which only the person running the service can name: say which one to allow.
+    const refused = new Set<string>()
     const server = this.server = createServer((req, res) => {
       void (async () => {
+        const host = req.headers.host ?? ''
+        if (!allowedHost(host, port, allowedHosts)) {
+          if (!refused.has(host)) { refused.add(host); this.options.logger.warn('claude-superagent refused a request for Host "%s": if a gateway forwards the panel from there, add it to allowedHosts in %s and restart', host, join(stateDir, 'config.json')) }
+          res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8', 'x-content-type-options': 'nosniff' })
+          res.end(`claude-superagent does not answer for Host "${host}". If this is your gateway, add it to allowedHosts in config.json in the state directory and restart.\n`)
+          return
+        }
         const pathname = decodeURIComponent(new URL(req.url ?? '/', 'http://localhost').pathname)
         if (await api(req, res, pathname)) return
         if (pathname.startsWith('/local/')) {
-          if (!allowed(req) || req.headers['x-orchestrator-request'] !== '1') { res.writeHead(403); res.end(); return }
+          if (!sameOrigin(req, port, allowedHosts)) { res.writeHead(403); res.end(); return }
           await local(req, res, pathname, () => readJson(req)); return
         }
         if (this.options.panel && await this.options.panel(req, res, pathname)) return
