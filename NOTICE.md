@@ -1,7 +1,5 @@
 # Notice
 
-claude-superagent is an unofficial project. It is not made, endorsed or supported by Anthropic or DeepSeek.
-
 ## Code derived from dsh-superagent-prototype
 
 Source: https://github.com/deepseek-ai/dsh-superagent-prototype, commit `6337fc8` (2026-10-31).

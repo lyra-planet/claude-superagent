@@ -19,9 +19,6 @@ Ask for work from your terminal or on GitHub. It opens a ticket, does the work i
 
 </div>
 
-> [!NOTE]
-> Unofficial. Not made, endorsed or supported by Anthropic or DeepSeek, and not related to SuperClaude. It is a research prototype: read the code and [the rules it keeps](#rules-it-keeps) before you point it at a repository your team uses.
-
 ## What it does
 
 - **Takes requests where people already are.** The interactive terminal, `@`-mentions on GitHub issues and pull requests, and optionally Feishu chats.

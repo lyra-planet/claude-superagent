@@ -2,7 +2,7 @@
   "name": "claude-superagent",
   "version": "0.0.0",
   "private": true,
-  "description": "Unofficial: DeepSeek's dsh-superagent design, rebuilt on Claude Code (Agent SDK). One always-on router, one worker per ticket, follow-ups go straight to the worker.",
+  "description": "An always-on Claude Code agent for one GitHub repository: DeepSeek's dsh-superagent design, rebuilt on the Claude Agent SDK. One always-on router, one worker per ticket, follow-ups go straight to the worker.",
   "license": "MIT",
   "type": "module",
   "engines": {
