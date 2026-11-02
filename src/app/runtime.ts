@@ -9,7 +9,7 @@ import type { Deployment, Machine } from '../deployment.ts'
 import { ClaudeExecutor } from '../executor/claude.ts'
 import { stableUuid, sourceTrigger, workerSessionId } from '../executor/common.ts'
 import { Commands } from '../infra/commands.ts'
-import { nodeSubprocess, workerGitVariables, type SubprocessRuntime } from '../infra/environment.ts'
+import { nodeSubprocess, workerBin, workerGitConfig, workerGitVariables, type SubprocessRuntime } from '../infra/environment.ts'
 import { HealthBoard } from '../infra/health.ts'
 import type { Logger } from '../infra/log.ts'
 import { KV } from '../kv.ts'
@@ -345,8 +345,13 @@ export class Runtime implements SourceHost {
           res.end(`claude-superagent does not answer for Host "${host}". If this is your gateway, add it to allowedHosts in config.json in the state directory and restart.\n`)
           return
         }
-        const pathname = decodeURIComponent(new URL(req.url ?? '/', 'http://localhost').pathname)
-        if (await api(req, res, pathname)) return
+        // The API decodes its path a segment at a time, so an escaped slash stays inside its segment.
+        const raw = new URL(req.url ?? '/', 'http://localhost').pathname
+        if (await api(req, res, raw)) return
+        let pathname: string
+        try { pathname = decodeURIComponent(raw) } catch {
+          res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' }); res.end('A path segment has a malformed escape\n'); return
+        }
         if (pathname.startsWith('/local/')) {
           if (!sameOrigin(req, port, allowedHosts)) { res.writeHead(403); res.end(); return }
           if (await this.terminal(req, res, pathname)) return
@@ -386,7 +391,7 @@ export class Runtime implements SourceHost {
       json(200, { tickets: this.store.tickets.list().sort((a, b) => b.createdAt.localeCompare(a.createdAt)).flatMap(ticket => this.terminalTicket(ticket.id) ?? []) })
       return true
     }
-    const route = /^\/local\/tickets\/([a-f0-9]{8,64})\/(activity|hold|release)$/.exec(pathname)
+    const route = /^\/local\/tickets\/([a-f0-9]{8,64})\/(activity|session|hold|release)$/.exec(pathname)
     const ticket = route ? this.store.tickets.get(route[1]!) : undefined
     if (!route) return false
     if (!ticket) { json(404, { error: 'Ticket not found' }); return true }
@@ -395,10 +400,17 @@ export class Runtime implements SourceHost {
       const history = await this.sdk.getSessionMessages(workerSessionId(ticket.id), { dir: ticket.execution?.directory ?? '' }).catch(() => [])
       json(200, { lines: history.flatMap(message => activityOf(message)).slice(-limit) }); return true
     }
+    // Where the worker's Session is, to open it in Claude Code; the person works with the worker's git and gh there, acting as
+    // the agent account in its Session, as in upstream's.
+    const session = () => ({ sessionId: workerSessionId(ticket.id), cwd: ticket.execution?.directory ?? '', claudeConfigDir: this.machine.claudeConfigDir,
+      working: !!this.sessions.worker(ticket.id)?.working, held: this.executor.held(ticket.id),
+      env: { GIT_CONFIG_GLOBAL: workerGitConfig(this.machine.stateDir), GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0', PATH_PREFIX: workerBin(this.machine.stateDir),
+        ...workerGitVariables(this.machine.stateDir, this.setup.configured() ? this.setup.deployment.github : undefined, false) } })
+    if (req.method === 'GET' && route[2] === 'session') { json(200, session()); return true }
     if (req.method === 'POST' && route[2] === 'hold') {
       const body = await readJson(req).catch(() => ({})) as { now?: unknown }
       const { stopped } = await this.executor.hold(ticket.id, body?.now === true)
-      json(200, { sessionId: workerSessionId(ticket.id), cwd: ticket.execution?.directory ?? '', claudeConfigDir: this.machine.claudeConfigDir, stopped }); return true
+      json(200, { ...session(), stopped }); return true
     }
     if (req.method === 'POST' && route[2] === 'release') { this.executor.release(ticket.id); json(200, { released: true }); return true }
     return false
