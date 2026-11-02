@@ -42,7 +42,7 @@ function available(ctx: SourceContext): boolean {
 /** Runs the live event consumer only while the Source is enabled; disabling it stops the consumer within five seconds. */
 async function watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {
   await ctx.ready
-  // Setup restarts dsh-superagent once it resolves the bot; until then nothing runs.
+  // Setup restarts claude-superagent once it resolves the bot; until then nothing runs.
   if (!available(ctx)) return
   let retry: number | undefined
   while (!signal.aborted) {

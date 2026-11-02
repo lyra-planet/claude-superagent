@@ -1,5 +1,5 @@
 ---
-name: dsh-superagent-feishu
+name: feishu
 description: Read Feishu messages, threads, nested forwards, attachments and documents using the bot identity.
 ---
 

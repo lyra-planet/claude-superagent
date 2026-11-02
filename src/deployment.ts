@@ -11,7 +11,7 @@ const reason = (error: unknown): string => error instanceof Error ? error.messag
 export interface Volatile<T> { get(): T }
 const volatile = <T>(value: T): Volatile<T> => ({ get: () => value })
 /**
- * The machine configuration in `<stateDir>/config.json`, beside the database: what upstream's DSH profile held. Everything
+ * The machine configuration in `<stateDir>/config.json`, beside the database: what upstream's DeepSeek Harness profile held. Everything
  * else (Sources, Policy, Execution, prompts) is a setting the panel and the management API save in the database.
  */
 export const ConfigSchema = z.object({
@@ -19,7 +19,7 @@ export const ConfigSchema = z.object({
   port: z.number().int().min(1).max(65535).default(3082),
   /** Host headers the management API accepts besides 127.0.0.1 and localhost, such as a gateway that forwards to the port. */
   allowedHosts: z.array(z.string().min(1)).default([]),
-  /** Claude Code's configuration directory for every Session dsh-superagent starts; empty for `<stateDir>/claude`. */
+  /** Claude Code's configuration directory for every Session claude-superagent starts; empty for `<stateDir>/claude`. */
   claudeConfigDir: z.string().refine(path => path === '' || path.startsWith('/'), 'An absolute path, or empty').default(''),
   promptMaxChars: z.number().int().min(LIMITS.promptMaxChars.min).max(LIMITS.promptMaxChars.max).default(100000),
   admissionContextMaxPages: z.number().int().min(LIMITS.admissionContextMaxPages.min).max(LIMITS.admissionContextMaxPages.max).default(10),

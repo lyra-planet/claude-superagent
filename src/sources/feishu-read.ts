@@ -39,7 +39,7 @@ export async function readFeishuLink(commands: Commands, ref: FeishuRef): Promis
 /** Resource references are anchored to an accepted trigger instead of arbitrary chat or message IDs. */
 export function feishuReferences(ref: FeishuRef) {
   const read = (section: string) => `feishu/${ref.triggerId}/${section}`
-  return { skill: 'dsh-superagent-feishu', message: read('message'), root: read('root'), parent: read('parent'), thread: read('thread'),
+  return { skill: 'superagent:feishu', message: read('message'), root: read('root'), parent: read('parent'), thread: read('thread'),
     around: read('around') }
 }
 

@@ -1,6 +1,6 @@
 /**
  * Process environment and CLI shims that bind git, gh, and lark-cli to the deployment's accounts and block disallowed commands.
- * Variables read by workers avoid `KEY|PASSWORD|SECRET|TOKEN` in their names because DSH strips credential-shaped variables from child environments.
+ * Variables read by workers avoid `KEY|PASSWORD|SECRET|TOKEN` in their names because worker commands never inherit credential-shaped variables (`CREDENTIAL_NAME`).
  * Provides default-path guardrails rather than an OS-level security boundary, as workers run under the operator's OS user.
  */
 import { spawn } from 'node:child_process'
@@ -11,9 +11,9 @@ import type { Deployment } from '../deployment.ts'
 import { SetupError } from '../setup.ts'
 import { CliError } from './commands.ts'
 
-const MARKER = '# Written by dsh-superagent on every start; edits are lost.'
-/** Markers of files written under the project's earlier names (`dsh-tag`, `dsh-go`, `dsh-freelancer`), which `dsh-superagent` owns and replaces too. */
-const LEGACY_MARKERS = ['dsh-tag', 'dsh-go', 'dsh-freelancer'].map(name => `# Written by ${name} on every start; edits are lost.`)
+const MARKER = '# Written by claude-superagent on every start; edits are lost.'
+/** Markers of files upstream's dsh-superagent and its earlier names wrote, which this host owns and replaces too. */
+const LEGACY_MARKERS = ['dsh-superagent', 'dsh-tag', 'dsh-go', 'dsh-freelancer'].map(name => `# Written by ${name} on every start; edits are lost.`)
 /** Commands workers need, which `blockedCommands` cannot block: the shims and git. */
 import { WORKER_COMMANDS } from './worker-commands.ts'
 export { WORKER_COMMANDS }
@@ -58,7 +58,7 @@ export function agentVariables(stateDir: string): Record<string, string | undefi
   }
 }
 
-/** True when a regular file starts with the dsh-superagent marker in its first two lines; a symbolic link, directory, or other non-regular file never counts as written by dsh-superagent. */
+/** True when a regular file starts with this host's marker in its first two lines; a symbolic link, directory, or other non-regular file never counts as written by claude-superagent. */
 async function written(file: string): Promise<boolean> {
   if (!(await lstat(file)).isFile()) return false
   const head = (await readFile(file, 'utf8')).split('\n', 2)
