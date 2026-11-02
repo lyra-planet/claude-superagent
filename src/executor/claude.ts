@@ -20,6 +20,8 @@ import { ASSIGNMENT_CHARS, BACKGROUND_LIMIT_MS, PREPARE_TIMEOUT_MS, PrepareFaile
   triggerMessage } from './common.ts'
 
 const now = (): string => new Date().toISOString()
+/** A background task by its id and the first line of what it runs, as upstream names a job. */
+const named = (task: { id: string; description: string }) => { const line = task.description.split('\n')[0]?.trim(); return line ? `${task.id} (${line})` : task.id }
 /** `work`, or false once `signal` aborts or `ms` pass first. */
 export function until<T>(work: Promise<T>, signal?: AbortSignal, ms?: number): Promise<T | false> {
   if (signal?.aborted) return Promise.resolve(false)
@@ -111,11 +113,9 @@ export class ClaudeExecutor implements Executor {
       if (!session) return
       this.track(ticket.id, (async () => {
         session.forget(session.pendingIds())
-        if (!ownTurn) await session.interrupt()
         for (const task of session.background) await session.stopTask(task.id)
-        // A worker that ends its own turn finishes it; then its query closes.
-        if (ownTurn) await until(session.whenIdle(), this.host.lifetime)
-        await session.close()
+        // A worker that ends its own turn finishes it, and its query closes once idle (`workerIdle`).
+        if (!ownTurn) { await session.interrupt(); await session.close() }
         this.host.logger.info('claude-superagent: stopped the worker of %s (%s)', ticket.id.slice(0, 12), reason)
       })())
     })
@@ -333,6 +333,12 @@ export class ClaudeExecutor implements Executor {
   private async workerIdle(ticketId: string, result: SDKResultMessage | undefined): Promise<void> {
     const idle = this.current(ticketId)
     const assignment = idle && liveTicket(idle) ? runningAssignment(idle) : undefined
+    // A worker that finished its own last turn after its ticket ended has nothing left to run for.
+    if (!assignment && !this.host.closing()) {
+      const session = this.host.sessions.worker(ticketId)
+      if (session && !session.busy && !(idle && liveTicket(idle))) await session.close()
+      return
+    }
     if (!idle || !assignment || this.host.closing() || this.resuming.has(assignment.id)) return
     if (result && (result.subtype !== 'success' || result.is_error)) {
       const error = new Error(('errors' in result && result.errors?.join('; ')) || ('result' in result && result.result) || result.subtype || 'The worker turn failed')
@@ -371,12 +377,10 @@ export class ClaudeExecutor implements Executor {
       const jobs = session.background.filter(task => !subagent(task) && !left.has(task.id))
       const minutes = BACKGROUND_LIMIT_MS / 60_000
       for (const job of jobs) await session.stopTask(job.id)
-      if (jobs.length) {
-        const names = jobs.map(job => `${job.id} (${job.description})`).join(', ')
-        await this.host.sessions.prompt(session, `killed:${jobs.map(job => job.id).join(',')}`,
-          `Your background jobs ran ${minutes} minutes after your turn ended and were stopped: ${names}.`, 'inject')
-      }
-      stopped = jobs.length ? `Background jobs ran ${minutes} minutes after the worker's turn ended and were stopped: ${jobs.map(job => job.description).join(', ')}.`
+      const names = jobs.map(named).join(', ')
+      if (jobs.length) await this.host.sessions.prompt(session, `killed:${jobs.map(job => job.id).join(',')}`,
+        `Your background jobs ran ${minutes} minutes after your turn ended and were stopped: ${names}.`, 'inject')
+      stopped = jobs.length ? `Background jobs ran ${minutes} minutes after the worker's turn ended and were stopped: ${names}.`
         : `Subagents still ran ${minutes} minutes after the worker's turn ended.`
     }
     // The worker may have reported while its turn ended; a blocked or failed report a person's message has lifted is stale.
@@ -414,10 +418,11 @@ export class ClaudeExecutor implements Executor {
   private async handOff(ticketId: string, session: ClaudeSession): Promise<void> {
     const left = this.left.get(ticketId) ?? new Set<string>()
     this.left.set(ticketId, left)
-    for (const task of session.background) {
-      if (subagent(task)) await session.stopTask(task.id)
-      else left.add(task.id)
-    }
+    for (const task of session.background) if (!subagent(task)) left.add(task.id)
+    // A delivery waits for the subagents' stop, as for any stop of the worker's background work.
+    const stop = Promise.all(session.background.filter(subagent).map(task => session.stopTask(task.id))).then(() => {})
+    this.track(ticketId, stop)
+    await stop
     if (!session.background.some(task => !subagent(task)) && !session.working) await session.close()
   }
   /** Report `waiting` for a turn that ended without a report since its Inputs, with its last words, and tell the router. */

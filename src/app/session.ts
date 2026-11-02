@@ -143,7 +143,9 @@ export class ClaudeSession {
    */
   async send(uuid: string, text: string, delivery: Delivery, authorize?: () => void): Promise<void> {
     const taken = await this.takenSet()
-    if (taken.has(uuid) || this.queued.has(uuid)) return
+    // One a step took before, such as just before a restart, counts as taken now: its sender may not have heard.
+    if (taken.has(uuid)) { this.events.took?.(this, uuid); return }
+    if (this.queued.has(uuid)) return
     await this.openSession()
     authorize?.()
     // Opening hands over what the ledger kept, this message too when an earlier send recorded it.
