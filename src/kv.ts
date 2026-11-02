@@ -41,9 +41,6 @@ export const KV = {
     model: family<RoleModel | null, [session: string]>('session-model:') },
   /** Executor: the tickets whose worker Session a person holds to work in it directly. */
   executor: { held: record<string[]>('executor-held') },
-  /** Schema 11 migration: legacy main-Session queues imported into the effect table. */
-  queues: { relays: record<{ id: string; text: string }[]>('relay-queue'), unsubscribed: record<string[]>('subscription-results'),
-    prompts: record<number | null>('prompt-notification'), settings: record<number | null>('settings-notification') },
   /** Per-Source resolved display names mapping a named ID (such as a Feishu chat ID) to its display name. */
   sources: { labels: family<Record<string, string>, [source: string]>('source-labels:') },
   /**

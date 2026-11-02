@@ -1,18 +1,38 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const NUMBERED = /^(\d{3})-[a-z0-9-]+\.md$/
 const numbered = readdirSync(join(ROOT, 'docs')).filter(name => NUMBERED.test(name)).sort()
-// Adapted: this repository's entry documents are README.md and NOTICE.md (upstream: README.md and SETUP.md), and its
-// documents in docs/ are not numbered yet.
+// Adapted: this repository's entry documents are README.md and NOTICE.md (upstream: README.md and SETUP.md).
 const entries = ['README.md', 'NOTICE.md']
 const documents = [...entries, ...readdirSync(join(ROOT, 'docs')).filter(name => name.endsWith('.md')).map(name => `docs/${name}`)]
 const read = (path: string): string => readFileSync(join(ROOT, path), 'utf8')
 function links(file: string): string[] {
   return [...readFileSync(file, 'utf8').matchAll(/\]\(([^)\s]+)\)/g)].map(match => match[1]!.split('#')[0]!).filter(target => target && !/^[a-z]+:/.test(target))
+}
+const files = (directory: string): string[] => readdirSync(join(ROOT, directory), { recursive: true, withFileTypes: true })
+  .filter(entry => entry.isFile()).map(entry => relative(ROOT, join(entry.parentPath, entry.name)))
+/**
+ * Extract repo-relative file paths from the first column of a table under `## <heading>` in `docs/007-architecture.md`.
+ * Bare filenames inherit the directory of the preceding path in the same cell.
+ */
+function listed(heading: string): string[] {
+  const lines = read('docs/007-architecture.md').split('\n')
+  const start = lines.indexOf(`## ${heading}`)
+  const end = lines.findIndex((line, index) => index > start && line.startsWith('## '))
+  // The first two rows are the header and its separator.
+  const rows = lines.slice(start, end < 0 ? undefined : end).filter(line => line.startsWith('| ')).slice(2)
+  return rows.flatMap(row => {
+    let directory = ''
+    return [...row.split('|')[1]!.matchAll(/`([^`]+)`/g)].map(([, name]) => {
+      if (!name!.includes('/')) return join(directory, name!)
+      directory = dirname(name!)
+      return name!
+    })
+  })
 }
 
 describe('documentation', () => {
@@ -28,13 +48,24 @@ describe('documentation', () => {
     }))
     expect(violations).toEqual([])
   })
+  // Adapted: every document's local links resolve, the unnumbered ones in docs/ included (upstream: the entries and the
+  // numbered documents).
   it('resolves every local link', () => {
-    const files = documents.map(path => join(ROOT, path))
-    const missing = files.flatMap(file => links(file).filter(target => !existsSync(resolve(dirname(file), target))).map(target => `${file.slice(ROOT.length + 1)} → ${target}`))
+    const missing = documents.map(path => join(ROOT, path)).flatMap(file => links(file).filter(target => !existsSync(resolve(dirname(file), target)))
+      .map(target => `${file.slice(ROOT.length + 1)} → ${target}`))
     expect(missing).toEqual([])
   })
   it('leaves no merge conflict markers in any document', () => {
     expect(documents.filter(path => /^(<{7}|>{7}) /m.test(read(path)))).toEqual([])
   })
-  // Dropped with the port: the module and test tables of upstream's docs/007-architecture.md, which this repository does not have.
+  it('lists every module of src in the module table of 007 Architecture, and only files that exist', () => {
+    const modules = listed('Modules')
+    expect(files('src').filter(path => !modules.includes(path))).toEqual([])
+    expect(modules.filter(path => !existsSync(join(ROOT, path)))).toEqual([])
+  })
+  it('lists every test in the test table of 007 Architecture, and only files that exist', () => {
+    const tests = listed('Tests')
+    expect(files('tests').filter(path => /\.spec\.tsx?$/.test(path) && !tests.includes(path))).toEqual([])
+    expect(tests.filter(path => !existsSync(join(ROOT, path)))).toEqual([])
+  })
 })

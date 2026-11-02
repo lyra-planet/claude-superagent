@@ -73,9 +73,9 @@ export interface RuntimeOptions {
   listen?: boolean
 }
 const now = (): string => new Date().toISOString()
-/** The variables of a Claude Code session the host runs inside, which a Session it starts must not inherit. */
 /** What git and gh reach: the site and its API, and the hosts gh downloads CI logs and artifacts from. */
 export const GITHUB_DOMAINS = ['github.com', '*.github.com', '*.githubusercontent.com']
+/** The variables of a Claude Code session the host runs inside, which a Session it starts must not inherit. */
 const SESSION_VARIABLES = /^(CLAUDECODE|CLAUDE_CODE_SESSION_ID|CLAUDE_CODE_CHILD_SESSION|CLAUDE_CODE_SESSION_ATTENDED|CLAUDE_CODE_MESSAGING_|CLAUDE_CODE_ENTRYPOINT|CLAUDE_CODE_EXECPATH|CLAUDE_PID$|CLAUDE_EFFORT$)/
 
 /**

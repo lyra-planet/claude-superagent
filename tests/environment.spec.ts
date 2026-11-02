@@ -112,7 +112,7 @@ describe('agent git configuration', () => {
     await git('commit', '-q', '--allow-empty', '--author', 'Alice <alice@example.com>', '-m', 'for Alice')
     expect(await git('log', '-1', '--format=%an / %cn')).toBe(`Alice / ${deployment.github.login}`)
     // Unsandboxed, git takes nothing from the ignore file.
-    expect(workerGitVariables(dir, deployment.github, false)).toEqual({ GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'user.name',
+    expect(workerGitVariables(dir, deployment.github, false)).toEqual({ GIT_CONFIG_COUNT: '2', FILTER_BRANCH_SQUELCH_WARNING: '1', GIT_CONFIG_KEY_0: 'user.name',
       GIT_CONFIG_VALUE_0: deployment.github.login, GIT_CONFIG_KEY_1: 'user.email', GIT_CONFIG_VALUE_1: deployment.github.noreply })
   })
 })

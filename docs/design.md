@@ -1,6 +1,6 @@
 # Host design
 
-How claude-superagent runs dsh-superagent's domain core on Claude Code. The core (`src/core`, `src/policy.ts`) stays as upstream wrote it, apart from the follow-up change below; this document covers what replaces upstream's DSH-specific layer. It builds on [host-probes.md](host-probes.md).
+How claude-superagent runs dsh-superagent's domain core on Claude Code. The core (`src/core`, `src/policy.ts`) stays as upstream wrote it, apart from the follow-up change below; this document covers what replaces upstream's DSH-specific layer. It builds on [host-probes.md](host-probes.md). The numbered documents describe the whole system in more detail: [003 Execution](003-execution.md) the Executor, the sandbox and the hook, [006 Deployment](006-deployment.md) operating it, and [007 Architecture](007-architecture.md) the code, with a table of where each part of upstream's host went.
 
 ## Process
 
@@ -20,8 +20,8 @@ Every Claude Code process it starts gets `CLAUDE_CONFIG_DIR=<stateDir>/claude` (
 `ClaudeSession` (`src/app/session.ts`) wraps one `query()` in streaming input mode:
 
 - Its id is fixed and derived from what it serves (`stableUuid('router', stateDir)`, `stableUuid('worker', ticketId)`). It opens with `sessionId` the first time and `resume` after, so a restart keeps the conversation.
-- `send(uuid, text, delivery)` hands it a message once per uuid: the Session's history keeps the uuid of every message it took, so a delivery retried after a restart is skipped.
-- `busy` follows the SDK's messages: a turn runs from a sent message or a system `init` until its `result`; `task_started` and `task_notification` keep it busy while a background job runs. A finished job starts the next turn by itself.
+- `send(uuid, text, delivery)` hands it a message once per uuid: the Session's history keeps the uuid of every message it took, so a delivery retried after a restart is skipped, and a ledger in the database (`session-inbox:<id>`) keeps what it was handed and did not take, which its next query is handed again.
+- Its state follows two Claude Code options the host turns on: `replay-user-messages`, so a message a step takes is yielded back, which counts it taken, and `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS`, whose idle signal ends a turn. `background_tasks_changed` lists the background tasks that keep it busy. A finished job starts the next turn by itself.
 
 | Delivery | `SDKUserMessage` | Used for |
 |---|---|---|
@@ -35,12 +35,12 @@ Every Claude Code process it starts gets `CLAUDE_CONFIG_DIR=<stateDir>/claude` (
 
 | Option | Value | Why |
 |---|---|---|
-| `tools` | `[]` | No built-in tool at all, so the router cannot run commands or read code. Upstream keeps `bash` and asks in prose |
+| `tools` | `['Skill']` | No built-in tool but `Skill`, which loads the host's and the team's skills, so the router cannot run commands or read code. Upstream keeps `bash` and asks in prose |
 | `mcpServers` | the host's `superagent` server | upstream's main-session tools |
-| `permissionMode` | `dontAsk`, with `mcp__superagent__*` in `allowedTools` | Anything else is denied without a prompt |
+| `permissionMode` | `dontAsk`, with `mcp__superagent__*` and `Skill` in `allowedTools` | Anything else is denied without a prompt |
 | `systemPrompt` | upstream's router prompt, assembled as upstream does | |
 
-The router restarts, on the same Session, when it is idle and its prompt or tools changed (`stale`), so a settings save applies at its next turn. It never waits: there is no shell to `sleep` in.
+The router restarts, on the same Session, when it is idle and its assembled prompt changed (`stale`), so a prompt or Policy save applies at its next turn. It never waits: there is no shell to `sleep` in.
 
 ## Workers
 
@@ -54,7 +54,7 @@ The router restarts, on the same Session, when it is idle and its prompt or tool
 | `hooks.PreToolUse` | the host's rules, below |
 | `plugins` | the host's skills (`skills/`), as a local plugin written to `<stateDir>/plugin` |
 
-The executor (`src/executor/claude.ts`) sends an Assignment with `later` and each Input with `next`, holds automatic Inputs while the ticket waits for a person, as upstream's `waitsForPerson` does, and stops a ticket with `interrupt()` and `close()`. It marks an Input read when the Session's history holds it. A worker keeps its slot while background jobs from its turn run, for at most 30 minutes, then they are stopped and the ticket reports waiting. A transient model error retries the turn with backoff.
+The executor (`src/executor/claude.ts`) sends an Assignment with `later` and each Input with `next`, and stops a ticket with `interrupt()` and `close()` unless its last word was its result; the core holds automatic Inputs while the ticket waits for a person (`waitsForPerson`). It marks an Input read when Claude Code replays the message that carries it. A worker keeps its slot while background work from its turn runs, for at most 30 minutes from each turn's end; then its shell jobs are stopped and the ticket reports waiting. A worker that handed off to a person frees its slot at once. A transient model error retries the turn with backoff. A person can hold a worker's Session to work in it with `claude-superagent open`.
 
 ### Sandbox
 

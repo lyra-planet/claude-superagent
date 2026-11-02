@@ -13,7 +13,7 @@ import { consoleLogger } from './infra/log.ts'
 import { runClaude, type Held } from './open.ts'
 import { SettingsSchema } from './policy.ts'
 import { ServiceClient, type TerminalTicket } from './remote.ts'
-import { latestLog, ownPidFile, runningPid, startDetached, stopService, stoppedByPerson } from './service.ts'
+import { clearStopMark, latestLog, ownPidFile, runningPid, startDetached, stopService, stoppedByPerson } from './service.ts'
 import { Store } from './app/store.ts'
 import { Runtime, type Route } from './app/runtime.ts'
 
@@ -107,6 +107,7 @@ async function start(): Promise<void> {
   const panel = built ? await import(panelModule).then(module => (module as { panelHandler(dir: string): Route }).panelHandler(new URL('../lib/panel/', import.meta.url).pathname))
     .catch(() => undefined) : undefined
   const release = ownPidFile(stateDir)
+  clearStopMark(stateDir)
   let runtime: Runtime | undefined
   let restarting = false
   const run = async () => {

@@ -1,7 +1,8 @@
 /**
  * Ported from upstream's tests/retry-health.spec.ts. Upstream's RetryHealth follows DSH's retry events for a model budget; here
- * Sessions follows the SDK's `api_retry` messages of each Session's query (src/app/sessions.ts:301): one for a usage limit or
- * billing (`rate_limit`, `billing_error`) is a wait on the model, which an assistant message, the Session's idle or its query's
+ * Sessions follows the SDK's `api_retry` messages of each Session's query (src/app/sessions.ts): one for billing
+ * (`billing_error`) is a wait on the model's budget; a 429 (`rate_limit`) is a passing throttle, as upstream counts it. An
+ * assistant message, a turn's end, the Session's idle or its query's
  * end clears. The cases run on the Runtime and the stand-in Claude Code, whose query emits what the case says; a Session's wait
  * shows as its `modelRetry` and on the `models` health entry. Upstream's `list()` is the health entry; its `get` is `modelRetry`.
  *

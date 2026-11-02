@@ -131,14 +131,14 @@ export function inputMessage(input: TicketInput, trigger?: object): string | und
 /**
  * Tracks active and starting worker sessions against the configured concurrency limit: a ticket holds a slot while its
  * worker's turn runs, while its shell jobs or subagents run after that turn ended, and while a launch or wake starts that worker.
- * DshExecutor reserves slots synchronously before awaiting launch or wake work so two starts cannot take the last slot,
+ * ClaudeExecutor reserves slots synchronously before awaiting launch or wake work so two starts cannot take the last slot,
  * and allows one extra slot beyond the limit for human follow-ups (`by === 'person'`) so they never wait behind new launches.
  */
 export class WorkerSlots {
   /** Tickets currently holding a startup slot, mapped to whether the start is a launch, a wake, or a wake for a person's message. */
   private readonly starting = new Map<string, 'launch' | 'wake' | 'person'>()
   /**
-   * @param running - Returns the ticket IDs whose worker holds a slot (see `DshExecutor.running`).
+   * @param running - Returns the ticket IDs whose worker holds a slot (see `ClaudeExecutor.running`).
    * @param max - Returns the configured maximum number of concurrent worker slots.
    */
   constructor(private readonly running: () => string[], private readonly max: () => number) {}

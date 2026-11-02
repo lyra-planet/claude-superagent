@@ -114,8 +114,9 @@ export interface SourceKind<C extends Record<string, unknown> = Record<string, u
 export interface SourceInstance<C extends Record<string, unknown> = Record<string, unknown>> { id: string; kind: string; enabled: boolean; config: C }
 
 /**
- * A Source the host runs: its kind, which the host registers, and the loop that reads its events, which the host starts once
- * setup resolves and stops by aborting `signal`. A failure that escapes the loop becomes the Source's health, not a crash.
+ * A Source the host runs: its kind, which the host registers, and the loop that reads its events, which the host starts as it
+ * starts, also while setup waits, and stops by aborting `signal`. A failure that escapes the loop becomes the Source's health,
+ * not a crash.
  */
 export interface SourcePlugin<C extends Record<string, unknown> = Record<string, unknown>> {
   kind: SourceKind<C>

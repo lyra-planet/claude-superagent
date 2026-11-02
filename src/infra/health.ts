@@ -10,7 +10,7 @@ export interface HealthEntry {
 
 /**
  * Central registry of component health entries, enforcing single-writer ownership per entry name.
- * Claimed by Runtime, Effects, Sessions, DshExecutor, Settings, and SourceRegistry, and read by management HTTP routes.
+ * Claimed by Runtime, Effects, Sessions, ClaudeExecutor, Settings, and SourceRegistry, and read by management HTTP routes.
  */
 export class HealthBoard {
   private readonly entries: Record<string, Health> = {}

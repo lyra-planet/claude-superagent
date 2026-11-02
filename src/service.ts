@@ -85,5 +85,7 @@ export async function stopService(stateDir: string, mark: boolean, waiting?: () 
   if (alive(pid)) throw new Error(`claude-superagent (pid ${pid}) did not stop within ${STOP_WAIT_MS / 60_000} minutes`)
   return true
 }
+/** A start, in the foreground or the background, lifts a person's stop. */
+export const clearStopMark = (stateDir: string): void => { rmSync(stopMark(stateDir), { force: true }) }
 /** Whether a person stopped the service, which a scheduled check with `--respect-stop` leaves stopped. */
 export const stoppedByPerson = (stateDir: string): boolean => existsSync(stopMark(stateDir))

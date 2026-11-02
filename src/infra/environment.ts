@@ -73,7 +73,8 @@ export function agentVariables(stateDir: string): Record<string, string | undefi
  */
 export function workerGitVariables(stateDir: string, agent: { login: string; noreply: string } | undefined, sandboxed: boolean): Record<string, string> {
   const config = [...agent ? [['user.name', agent.login], ['user.email', agent.noreply]] : [], ...sandboxed ? [['core.excludesFile', sandboxIgnore(stateDir)]] : []]
-  return { GIT_CONFIG_COUNT: String(config.length),
+  // git filter-branch, which the delivery prompt has a worker run, would wait on a warning without it.
+  return { GIT_CONFIG_COUNT: String(config.length), FILTER_BRANCH_SQUELCH_WARNING: '1',
     ...Object.fromEntries(config.flatMap(([name, value], index) => [[`GIT_CONFIG_KEY_${index}`, name!], [`GIT_CONFIG_VALUE_${index}`, value!]])) }
 }
 
