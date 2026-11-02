@@ -98,7 +98,10 @@ export class ClaudeSession {
   /** Pushed into the running query and not taken yet; `querying` holds those that start or continue a turn. */
   private readonly queued = new Set<string>()
   private readonly querying = new Set<string>()
-  /** The uuids of the messages the Session took: read from its history once, then kept up to date from the replays. */
+  /**
+   * The uuids of the messages the Session took: read from its history, then kept up to date from the replays while its query
+   * runs; read again once it ended, as the Session on disk may have changed or gone meanwhile.
+   */
   private taken?: Set<string>
   private idleWaiters: (() => void)[] = []
   constructor(readonly id: string, readonly cwd: string, private readonly start: () => Promise<SessionStart>, private readonly events: SessionEvents = {},
@@ -235,7 +238,7 @@ export class ClaudeSession {
     finally {
       if (this.running === running) {
         this.running = undefined; this.inbox = undefined; this.state = 'idle'; this.tasks.clear(); this.queued.clear(); this.querying.clear()
-        this.stopping.clear(); this.wake(false)
+        this.stopping.clear(); this.wake(false); this.taken = undefined
       }
       for (const resolve of this.idleWaiters.splice(0)) resolve()
       this.events.ended?.(this, failure)
