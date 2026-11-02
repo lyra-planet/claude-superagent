@@ -9,7 +9,7 @@ import type { Deployment, Machine } from '../deployment.ts'
 import { ClaudeExecutor } from '../executor/claude.ts'
 import { stableUuid, sourceTrigger } from '../executor/common.ts'
 import { Commands } from '../infra/commands.ts'
-import { nodeSubprocess, type SubprocessRuntime } from '../infra/environment.ts'
+import { nodeSubprocess, workerGitVariables, type SubprocessRuntime } from '../infra/environment.ts'
 import { HealthBoard } from '../infra/health.ts'
 import type { Logger } from '../infra/log.ts'
 import { KV } from '../kv.ts'
@@ -58,6 +58,8 @@ export interface RuntimeOptions {
 }
 const now = (): string => new Date().toISOString()
 /** The variables of a Claude Code session the host runs inside, which a Session it starts must not inherit. */
+/** What git and gh reach: the site and its API, and the hosts gh downloads CI logs and artifacts from. */
+export const GITHUB_DOMAINS = ['github.com', '*.github.com', '*.githubusercontent.com']
 const SESSION_VARIABLES = /^(CLAUDECODE|CLAUDE_CODE_SESSION_ID|CLAUDE_CODE_CHILD_SESSION|CLAUDE_CODE_SESSION_ATTENDED|CLAUDE_CODE_MESSAGING_|CLAUDE_CODE_ENTRYPOINT|CLAUDE_CODE_EXECPATH|CLAUDE_PID$|CLAUDE_EFFORT$)/
 
 /**
@@ -129,7 +131,7 @@ export class Runtime implements SourceHost {
         variables: ticket => setup.configured() ? (ticket ? this.ticketEnvironment(ticket) : deployed()) : undefined,
         tools: ticket => ticket ? executorTools(this.toolHost, ticket) : mainTools(this.toolHost, masterId),
         hooks: ticket => workerHooks(ticket.id, { ticket: id => store.tickets.get(id), blocked: () => store.settings().executor.blockedCommands }),
-        sandbox: () => this.sandbox() })
+        shell: () => this.shell() })
       mkdirSync(join(machine.stateDir, 'router'), { recursive: true })
       const resources: ResourceHost = { store, pages: new TextCache(4_000_000), prompts, commands, masterId,
         transcript: sessionId => getSessionMessages(sessionId).then(messages => messages as SessionRecord[], () => []),
@@ -207,12 +209,18 @@ export class Runtime implements SourceHost {
     const inherited = Object.fromEntries(Object.entries(process.env).filter(([name]) => !SESSION_VARIABLES.test(name)))
     return { ...inherited, CLAUDE_CONFIG_DIR: this.machine.claudeConfigDir }
   }
-  /** The workers' sandbox, from the Execution settings: `on`, `weak` for containers that cannot mount /proc, or `off` with Bash approved outright. */
-  private sandbox(): { sandbox?: import('@anthropic-ai/claude-agent-sdk').Options['sandbox']; bash: boolean } {
-    const mode = this.store.settings().executor.sandbox
-    if (mode === 'off') return { bash: true }
-    return { bash: false, sandbox: { enabled: true, failIfUnavailable: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false,
+  /**
+   * How workers' Bash runs. The sandbox follows the Execution settings: `on`, `weak` for containers that cannot mount /proc, or
+   * `off` with Bash approved outright; sandboxed Bash reaches GitHub, for git and gh, and the settings' other domains, nothing else.
+   * git gets the agent's identity, and sandboxed the placeholders to ignore, through the environment (`workerGitVariables`).
+   */
+  private shell(): { sandbox?: import('@anthropic-ai/claude-agent-sdk').Options['sandbox']; bash: boolean; env: Record<string, string> } {
+    const { sandbox: mode, networkDomains } = this.store.settings().executor
+    const env = workerGitVariables(this.machine.stateDir, this.setup.deployment?.github, mode !== 'off')
+    if (mode === 'off') return { bash: true, env }
+    return { bash: false, env, sandbox: { enabled: true, failIfUnavailable: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false,
       ...mode === 'weak' ? { enableWeakerNestedSandbox: true } : {},
+      network: { allowedDomains: [...GITHUB_DOMAINS, ...networkDomains] },
       filesystem: { allowWrite: [this.machine.stateDir], denyRead: [join(this.machine.claudeConfigDir, '.credentials.json')] } } }
   }
   /** The models Claude Code lists for the credentials in use, read through a short query that sends no prompt. */

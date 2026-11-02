@@ -4,88 +4,107 @@ How claude-superagent runs dsh-superagent's domain core on Claude Code. The core
 
 ## Process
 
-One Node process per deployment, started by a service script, holding:
+One Node process per state directory (`src/app/runtime.ts`), holding:
 
 - **Store**: one SQLite file through `node:sqlite`, as upstream. It implements the core's `Repositories` and keeps the effect queue, outbox receipts and settings.
-- **Engine**: upstream's, unchanged. Ports: `Assessor` and `Executor` below, `Outbox` sending through the Sources.
+- **Engine**: upstream's. Ports: `Assessor` and `Executor` below, `Outbox` sending through the Sources.
 - **Router session**: one long-lived `query()`.
-- **Worker sessions**: one `query()` per running Assignment.
-- **Sources**: GitHub first, as plugins behind upstream's `SourceKind`.
+- **Worker sessions**: one `query()` per ticket while it has work, closed when it is idle.
+- **Sources**: GitHub and Feishu, ported from upstream behind its `SourceKind`, and the terminal (`src/sources/local.ts`), new.
+- **Management server** on `127.0.0.1:<port>`: the panel's API, the terminal's routes, and the built panel.
 
-Every Claude Code process it starts gets `CLAUDE_CONFIG_DIR=<stateDir>/claude` and `settingSources: []`, so it reads no operator settings, hooks, skills or `CLAUDE.md`, and its sessions live with the deployment's state. Credentials come from `ANTHROPIC_API_KEY` or a cloud provider.
+Every Claude Code process it starts gets `CLAUDE_CONFIG_DIR=<stateDir>/claude` (or `claudeConfigDir`) and `settingSources: []`, so it reads no operator settings, hooks, skills or `CLAUDE.md`, and its sessions live with the deployment's state. The variables a Claude Code session gives its own children are removed, so a service started from inside a session is not part of it.
+
+## Sessions
+
+`ClaudeSession` (`src/app/session.ts`) wraps one `query()` in streaming input mode:
+
+- Its id is fixed and derived from what it serves (`stableUuid('router', stateDir)`, `stableUuid('worker', ticketId)`). It opens with `sessionId` the first time and `resume` after, so a restart keeps the conversation.
+- `send(uuid, text, delivery)` hands it a message once per uuid: the Session's history keeps the uuid of every message it took, so a delivery retried after a restart is skipped.
+- `busy` follows the SDK's messages: a turn runs from a sent message or a system `init` until its `result`; `task_started` and `task_notification` keep it busy while a background job runs. A finished job starts the next turn by itself.
+
+| Delivery | `SDKUserMessage` | Used for |
+|---|---|---|
+| `next` | `priority: "next"`: seen after the running step, or starts a turn | a person's follow-up, a relay to the router, a retry |
+| `later` | `priority: "later"`: after the running turn | a worker's Assignment |
+| `inject` | `shouldQuery: false` | notices to the router that need no action |
+
+`priority: "now"` is not used: it cuts off the running tool call, which may or may not have taken effect. How `inject` behaves on an idle Session is not probed yet.
 
 ## Router
 
 | Option | Value | Why |
 |---|---|---|
 | `tools` | `[]` | No built-in tool at all, so the router cannot run commands or read code. Upstream keeps `bash` and asks in prose |
-| `mcpServers` | the host's `superagent` server | `route`, `eval`, `eval_read`, `eval_decide`, `reply`, `read`, `ticket_retry`, `ticket_status`, `ticket_note`, `thread_unsubscribe` |
-| `permissionMode` | `dontAsk`, with those tools in `allowedTools` | Anything else is denied without a prompt |
+| `mcpServers` | the host's `superagent` server | upstream's main-session tools |
+| `permissionMode` | `dontAsk`, with `mcp__superagent__*` in `allowedTools` | Anything else is denied without a prompt |
 | `systemPrompt` | upstream's router prompt, assembled as upstream does | |
-| `resume` | the stored router session id | Survives restarts |
 
-Input reaches the router through its streaming input:
-
-| Message | `SDKUserMessage` |
-|---|---|
-| A candidate, a worker's report or question, a person's follow-up | `priority: "next"`: seen after the router's running step |
-| A notice that needs no action (ticket ended, settings saved) | `shouldQuery: false`, to be confirmed on an idle session before relying on it |
-
-The router never waits: there is no shell to `sleep` in.
+The router restarts, on the same Session, when it is idle and its prompt or tools changed (`stale`), so a settings save applies at its next turn. It never waits: there is no shell to `sleep` in.
 
 ## Workers
 
 | Option | Value |
 |---|---|
-| `cwd` | the ticket directory, prepared as upstream does (`git worktree add`) |
-| `tools` | Claude Code's preset |
-| `mcpServers` | `superagent` with `ack`, `report`, `thread_unrelated`, `thread_follow`, `trigger_handback`, `read` |
-| `permissionMode` | `dontAsk`; `allowedTools` lists the superagent tools and file edits inside `cwd` |
-| `sandbox` | `enabled`, `failIfUnavailable`, `autoAllowBashIfSandboxed`, `allowUnsandboxedCommands: false`; `enableWeakerNestedSandbox` only where the default cannot start; `filesystem.denyRead` and `credentials.files` cover the operator's credential files |
+| `cwd` | the ticket directory, prepared by the prepare command (`init --clone` writes one that runs `git worktree add`) |
+| `tools` | Claude Code's preset; `disallowedTools` removes the interactive ones (questions, plan mode, worktrees, cron) |
+| `mcpServers` | `superagent` with upstream's worker tools |
+| `permissionMode` | `dontAsk`; `allowedTools` lists the superagent tools, file tools, web, todo, subagents and skills, and Bash only when the sandbox is off |
+| `sandbox` | from the Execution settings, below |
 | `hooks.PreToolUse` | the host's rules, below |
-| `resume` | the ticket's worker session id, so a retry or a restart keeps the session |
+| `plugins` | the host's skills (`skills/`), as a local plugin written to `<stateDir>/plugin` |
 
-Delivery of a ticket's Inputs, by the core's kinds:
+The executor (`src/executor/claude.ts`) sends an Assignment with `later` and each Input with `next`, holds automatic Inputs while the ticket waits for a person, as upstream's `waitsForPerson` does, and stops a ticket with `interrupt()` and `close()`. It marks an Input read when the Session's history holds it. A worker keeps its slot while background jobs from its turn run, for at most 30 minutes, then they are stopped and the ticket reports waiting. A transient model error retries the turn with backoff.
 
-| Input | `SDKUserMessage` |
+### Sandbox
+
+| Setting | Bash |
 |---|---|
-| A person's message, a resume, a status request | `priority: "next"` |
-| CI, a bot, a Policy change, a router note | `priority: "next"` while the worker runs; held while it waits for a person, as upstream's `waitsForPerson` does |
-| Stopping the ticket | not a message: `interrupt()`, then `close()` |
+| `on` | Claude Code's sandbox: writes to the ticket directory, the state directory and the clone's git directory (Claude Code allows a worktree's own); network to GitHub (`github.com`, `*.github.com`, `*.githubusercontent.com`) and `networkDomains`; the Claude Code credentials file unreadable |
+| `weak` | the same, with `enableWeakerNestedSandbox`, for containers where bubblewrap cannot mount `/proc`: other processes' `/proc` is visible |
+| `off` | runs as the service's OS user, approved outright |
 
-`priority: "now"` is not used for input: it cuts off the running tool call, which may or may not have taken effect.
+`failIfUnavailable` makes a missing sandbox an error instead of unsandboxed Bash. Claude Code itself keeps a clone's `.git/hooks` read-only. The `worktree` probe and an end-to-end run showed two more things the host has to provide:
 
-Turn and background state come from the SDK's messages: a `result` message is `Engine.turnEnded`; `task_started`, `task_notification` and `background_tasks_changed` keep the worker's slot while a background job runs. A finished job starts the worker's next turn by itself.
+- Claude Code asks before `git -c …`, `VAR=… git …` and a command that changes directory and runs git; `dontAsk` denies them. So the worker's git gets the agent's identity through `GIT_CONFIG_COUNT` in the Session's environment, which outranks a clone's own config, and a worker commits with a plain `git commit` (`--author` for an author the Delivery requirements name). This holds in every sandbox mode.
+- While a command runs, the sandbox mounts device files over shell, git, editor and Claude Code configuration in the working directory (`.bashrc`, `.gitmodules`, `.vscode`, `.claude/settings.json`, …), and `git add -A` fails on them. Sandboxed, git reads `<stateDir>/sandbox-gitignore` as `core.excludesFile`, which lists them at the repository root.
 
 ## Rules as hooks
 
-Upstream states these only in prompt text. Here a `PreToolUse` hook denies them, with a reason the worker sees:
+Upstream states these only in prompt text and command shims. Here a `PreToolUse` hook (`src/app/hooks.ts`) denies them, with a reason the worker reads, in every sandbox mode:
 
-- merging or enabling auto-merge as the agent account (`gh pr merge`, the GraphQL `mergePullRequest` and `enablePullRequestAutoMerge` mutations), unless Delivery requirements names another account's CLI for it
-- `gh auth`, and reading the operator's credential files
+- merging or enabling auto-merge as the agent account (`gh pr merge`, the GraphQL `mergePullRequest` and `enablePullRequestAutoMerge` mutations)
+- deleting or reconfiguring anything on GitHub (`gh repo delete|archive|edit|rename`, secrets, variables, keys, rulesets, `gh api -X DELETE`), and `gh auth`
+- reading credential files, by shell or by file tool
 - posting to a chat directly: replies go through `reply`
+- signalling processes (`kill`, `pkill`, `killall`, shutdown)
+- the commands the panel blocks, by name or path
 - any tool call once the ticket has ended
 
-The prompt still explains each rule; the hook makes it hold when the prompt does not.
+The prompt still explains each rule; the hook makes it hold when the prompt does not. A command line that builds a name another way gets past the name checks, so the hook is not a boundary against a determined program: run the service as an OS user that holds only the agent's credentials.
 
 ## Follow-ups from people outside the allowed list
 
 Upstream delivers every person's message on a ticket's thread to its worker as a follow-up the worker owns, whoever sent it, and such a message resumes an ended ticket. On a public repository that lets anyone who can comment drive a worker that runs commands.
 
-Change in `Intake.receive` (`src/core/intake.ts`), the core's one change from upstream:
+The core's one change from upstream: `Policy.owns(trigger)` (`src/policy.ts`) says whether a person may decide a ticket's follow-ups: someone on the Source's allowed list, or a sender the admission table makes explicit for that scope. `Intake.receive` (`src/core/intake.ts`) delivers anyone else's message to subscribed tickets as context: the worker reads it, does not own it, it resumes nothing, and it goes to Eval like any message no ticket owns. The upstream tests that assumed the old behaviour changed with it.
 
-- A message from a sender the Source's Policy part does not list reaches subscribed tickets as context (`context: true`), as messages on a context-only thread do: the worker reads it, does not own it, and it resumes nothing.
-- It goes to Eval like any message no ticket owns, where the gate already treats it as an inferred candidate in `observe` and `auto` mode.
-- A sender the admission table makes explicit for that scope keeps today's behaviour.
+## The terminal Source
 
-The upstream tests that assume today's behaviour change with it, each named in the commit.
+`claude-superagent ask` posts to `/local/messages`; each conversation is a Thread, and the operator named at `init` is on its allowed list, so a request is an explicit candidate. Replies are stored per conversation and read with `inbox` or `ask --wait`. A follow-up on the conversation goes to its ticket's worker like a GitHub comment does.
 
-## Build order
+## Management server
 
-1. Store and effect queue on `node:sqlite`, with upstream's store tests
-2. Worker executor on the SDK: launch, deliver, stop, resume, slots; tested with a stub `query`
-3. Router session and the `superagent` tools
-4. GitHub Source, ported from upstream
-5. Follow-up admission change
-6. Hooks
-7. Service script and a first end-to-end run on a test repository
+It listens on 127.0.0.1 only. A request is answered when its Host is the loopback port or in `allowedHosts` (a gateway that serves the panel under a path); any other Host gets a 403 that names it, so a page that a DNS rebinding points at the port is refused. The API and the terminal's routes also need the panel's `x-orchestrator-request` header and a matching Origin, as upstream's did.
+
+## End-to-end runs
+
+On a private test repository, through the terminal Source and GitHub, with the sandbox off:
+
+- a request is acknowledged, worked in a worktree, pushed and opened as a pull request, bound to the ticket, and answered in the conversation
+- a follow-up reaches the same worker without a new Decision, which pushes a second commit
+- a person merging the pull request ends the ticket, and the conversation hears so
+- after a restart mid-Assignment, the worker is told it was interrupted, checks its state and finishes without repeating work
+- asked to merge its own pull request, the worker declines and says a person must
+
+With the weaker sandbox, in a container that cannot mount `/proc`, a follow-up on that pull request: the worker commits with a plain `git commit` as the agent account, pushes, and reads the pull request with `gh`, through the sandbox's proxy. Before the host set git's identity and the ignore file, the same follow-up failed at `git -c … commit`, and the worker asked a person for permission.

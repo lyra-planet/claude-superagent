@@ -98,6 +98,8 @@ export const ExecutorConfigSchema = z.object({
   prepare: z.string().max(LIMITS.prepareCommand).default(''),
   blockedCommands: z.array(CommandNameSchema).default([]),
   sandbox: z.enum(['on', 'weak', 'off']).default('on'),
+  /** Domains sandboxed Bash may reach besides GitHub's, such as a package registry; `*.` matches subdomains. */
+  networkDomains: z.array(z.string().regex(/^(\*\.)?[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/, 'A domain such as registry.npmjs.org or *.example.com')).default([]),
 }).strict()
 export const SourceInstanceSchema = z.object({ enabled: z.boolean().default(true), config: z.record(z.string(), z.unknown()).default({}) }).strict()
 export const SettingsSchema = z.object({

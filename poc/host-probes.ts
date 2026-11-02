@@ -9,11 +9,14 @@
  *   sandbox[:weak]                sandboxed Bash under dontAsk: writes outside cwd, network, a denied read, and a
  *                                 PreToolUse hook deny whose reason the model should repeat; `weak` turns on
  *                                 enableWeakerNestedSandbox, for containers where bubblewrap cannot mount /proc
+ *   worktree[:weak][:allow]       sandboxed git work: a commit in a worktree of a clone outside cwd, GitHub through the
+ *                                 network filter, a write to the clone's hooks; `allow` adds what the host allows
  *
  * Every probe runs in a fresh directory under poc/.runs/, loads no settings (settingSources: []), persists no session,
  * and prints a timeline of the SDK messages. Set POC_MODEL to choose the model.
  */
 import { createSdkMcpServer, query, tool, type Options, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
+import { execFile } from 'node:child_process'
 import { chmod, mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { z } from 'zod'
@@ -196,6 +199,47 @@ async function sandbox(cwd: string, weak: boolean): Promise<void> {
     + `hook denied=${denied.length}, model repeated hook reason=${/HOOK_REASON_9/.test(all)}, stub gh ran=${/STUB_GH_RAN/.test(all)}`)
 }
 
+/**
+ * What a worker's sandboxed Bash needs for its git work: a commit in a worktree whose clone lies outside the working
+ * directory, and GitHub through the sandbox's network filter (and any proxy the machine needs). `allow` gives the sandbox
+ * what the host gives it; without it the sandbox has its defaults.
+ */
+async function worktree(cwd: string, weak: boolean, allow: boolean): Promise<void> {
+  const parent = await mkdtemp(join(process.env.POC_OUTSIDE_PARENT ?? RUNS, 'clone-'))
+  const clone = join(parent, 'clone'), tree = join(cwd, 'tree')
+  const git = (args: string[], at = parent) => new Promise<string>((resolve, reject) => {
+    execFile('git', args, { cwd: at }, (error, stdout, stderr) => { error ? reject(new Error(stderr || String(error))) : resolve(stdout) })
+  })
+  await git(['init', '-q', '-b', 'main', clone])
+  await git(['-C', clone, '-c', 'user.name=probe', '-c', 'user.email=probe@example.com', 'commit', '-q', '--allow-empty', '-m', 'root'])
+  await git(['-C', clone, 'worktree', 'add', '-q', '-b', 'probe', tree])
+  const common = join(clone, '.git')
+  const inbox = new Inbox()
+  inbox.push([
+    'Run each of these commands with the Bash tool, one call each, in order, even if one fails. Do not retry, do not work around a failure, and do not ask for permission.',
+    // A worker runs in its worktree and has its identity from its git config: Claude Code asks before a command that changes
+    // directory and runs git, or passes git `-c`, which dontAsk denies.
+    '1. echo probe > probe.txt && git add probe.txt && git commit -qm probe && git log --oneline -1',
+    "2. curl -sS -m 10 -o /dev/null -w '%{http_code}' https://api.github.com/zen",
+    "3. curl -sS -m 10 -o /dev/null -w '%{http_code}' https://example.com",
+    `4. echo hook > ${common}/hooks/post-checkout`,
+    'Then reply with four lines, one per command: N=<ok|failed> <the output, or the error>.',
+  ].join('\n'))
+  const messages = await run({
+    cwd: tree, permissionMode: 'dontAsk', disallowedTools: ['Write', 'Edit', 'Agent'],
+    env: probeEnv({ GIT_AUTHOR_NAME: 'probe', GIT_AUTHOR_EMAIL: 'probe@example.com', GIT_COMMITTER_NAME: 'probe', GIT_COMMITTER_EMAIL: 'probe@example.com' }),
+    systemPrompt: 'You are a test agent. Follow the instructions exactly and keep text short.',
+    sandbox: { enabled: true, failIfUnavailable: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false,
+      ...weak ? { enableWeakerNestedSandbox: true } : {},
+      ...allow ? { network: { allowedDomains: ['github.com', '*.github.com', '*.githubusercontent.com'] },
+        filesystem: { allowWrite: [common], denyWrite: [join(common, 'hooks'), join(common, 'config')] } } : {} },
+  }, inbox, message => (message as any).type === 'result', 180_000)
+  const committed = (await git(['-C', tree, 'log', '--oneline', '-1'])).includes('probe')
+  const hooked = await stat(join(common, 'hooks', 'post-checkout')).then(() => true, () => false)
+  say(`VERDICT worktree${weak ? ':weak' : ''}${allow ? ':allow' : ''}: committed=${committed}, wrote a hook=${hooked}, `
+    + `answer=${JSON.stringify(text(messages).slice(-400))}`)
+}
+
 const probe = process.argv[2] ?? ''
 await mkdir(RUNS, { recursive: true })
 const cwd = await mkdtemp(join(RUNS, `${probe.replace(/[^a-z]+/g, '-')}-`))
@@ -203,4 +247,5 @@ say(`probe ${probe} in ${cwd} with ${MODEL}`)
 if (probe.startsWith('steer:')) await steer(probe.slice(6) as 'now' | 'next' | 'later' | 'inject', cwd)
 else if (probe === 'background') await background(cwd)
 else if (probe === 'sandbox' || probe === 'sandbox:weak') await sandbox(cwd, probe === 'sandbox:weak')
-else { console.error('Probes: steer:now steer:next steer:later steer:inject background sandbox sandbox:weak'); process.exit(2) }
+else if (/^worktree(:weak)?(:allow)?$/.test(probe)) await worktree(cwd, probe.includes(':weak'), probe.endsWith(':allow'))
+else { console.error('Probes: steer:now steer:next steer:later steer:inject background sandbox sandbox:weak worktree[:weak][:allow]'); process.exit(2) }

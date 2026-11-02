@@ -37,6 +37,21 @@ The outside directory has to be away from `/tmp`: the sandbox lets commands writ
 
 What the weaker sandbox leaves open: a command runs in a new PID namespace (its `$$` is 2), but `/proc` is the machine's own. It sees the machine's PID 1 and every process. Under root that likely includes other processes' `/proc/<pid>/environ`; this was not tested.
 
+### Git work in the sandbox
+
+`worktree:weak[:allow]`: the worker runs in a worktree whose clone lies outside its directory (and outside `/tmp`), commits, reaches `api.github.com` and `example.com`, and writes the clone's `.git/hooks`. `allow` adds what the host gives workers: `network.allowedDomains` GitHub's domains (`github.com`, `*.github.com`, `*.githubusercontent.com`).
+
+| Run | Commit | `api.github.com` | `example.com` | Write `.git/hooks` |
+|---|---|---|---|---|
+| Weaker sandbox, defaults | Committed: Claude Code lets a worktree write its clone's git directory | Blocked: proxy 403, `sandbox_violations` | Blocked | Blocked: read-only file system |
+| Weaker sandbox, `allow` | Committed | 200, also through the machine's own HTTPS proxy | Blocked | Blocked |
+
+What a first version of the probe and an end-to-end run showed besides:
+
+- `dontAsk` denies a Bash call Claude Code would ask about, and it asks about `git -c …`, `VAR=… git …`, and `cd … && git …`: a plain `git commit` in the working directory passes. The identity has to come from configuration.
+- While a command runs, the sandbox mounts device files over `.bashrc .bash_profile .profile .zshrc .zprofile .gitconfig .gitmodules .ripgreprc .mcp.json .idea .vscode` and twelve paths under `.claude/` in the working directory. `git status` lists them, `git add -A` fails on them (`can only add regular files`), and only an empty `.claude/.cc-writes/` stays afterwards.
+- Inside the sandbox `SANDBOX_RUNTIME` is set and `HTTPS_PROXY` points at the sandbox's own proxy; a wrapper that sets its own proxy has to keep that one.
+
 So, in an unprivileged container:
 
 - `failIfUnavailable: true` fails closed: with a missing dependency or a sandbox that cannot start, nothing runs unsandboxed.
@@ -48,7 +63,7 @@ So, in an unprivileged container:
 
 ```sh
 npm install
-node --experimental-strip-types --no-warnings poc/host-probes.ts steer:next   # steer:now steer:later steer:inject background sandbox sandbox:weak
+node --experimental-strip-types --no-warnings poc/host-probes.ts steer:next   # steer:now steer:later steer:inject background sandbox sandbox:weak worktree:weak:allow
 ```
 
 The sandbox needs `bubblewrap` and `socat` on PATH. Put the outside directory of the sandbox probe away from `/tmp` with `POC_OUTSIDE_PARENT`. A probe uses its own `CLAUDE_CONFIG_DIR` under `poc/.runs/` and drops the variables a running Claude Code session gives its children, so it can run from inside one.

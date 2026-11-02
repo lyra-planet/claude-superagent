@@ -49,6 +49,7 @@ it('saves the Eval block on the Policy settings and the Executor with its execut
   await click('DSH_SUPERAGENT_DIR')
   expect(field<HTMLTextAreaElement>(zh.prepareCommand).value).toBe('git worktree add "$DSH_SUPERAGENT_DIR"')
   await type(field<HTMLInputElement>(zh.blockedCommands), 'gh-personal  gh.other')
+  await type(field<HTMLInputElement>(zh.networkDomains), 'registry.npmjs.org, *.pypi.org')
   const [workerProvider, workerModel, effort] = all('.dt-model input')
   await type(workerProvider as HTMLInputElement, 'claude-code'); await type(workerModel as HTMLInputElement,
     'worker-model'); await type(effort as HTMLInputElement, 'high')
@@ -58,7 +59,8 @@ it('saves the Eval block on the Policy settings and the Executor with its execut
   expect(effort!.getAttribute('list')).toBeNull()
   await click(zh.save)
   expect(server.settings.executor).toEqual({ maxWorkers: 5, directory: '/srv/work',
-    prepare: 'git worktree add "$DSH_SUPERAGENT_DIR"', blockedCommands: ['gh-personal', 'gh.other'], sandbox: 'on', model: { provider: 'claude-code',
+    prepare: 'git worktree add "$DSH_SUPERAGENT_DIR"', blockedCommands: ['gh-personal', 'gh.other'], sandbox: 'on',
+    networkDomains: ['registry.npmjs.org', '*.pypi.org'], model: { provider: 'claude-code',
       model: 'worker-model', reasoningEffort: 'high' } })
   expect(server.requests.filter(request => request.method === 'PUT').map(request => request.path)).toEqual(['settings/eval',
     'settings/executor'])

@@ -4,8 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { CREDENTIAL_NAME, GIT_LOCATION, agentVariables, credentialHelper, nodeSubprocess, runAsWorker, verifyDirectory, withoutDirectory, workerBin,
-  workerGitConfig, writeEnvironment, type SubprocessRuntime } from '../src/infra/environment.ts'
+import { CREDENTIAL_NAME, GIT_LOCATION, agentVariables, credentialHelper, nodeSubprocess, runAsWorker, sandboxIgnore, verifyDirectory, withoutDirectory,
+  workerBin, workerGitConfig, workerGitVariables, writeEnvironment, type SubprocessRuntime } from '../src/infra/environment.ts'
 import { CliError } from '../src/infra/commands.ts'
 import { testDeployment } from './fixtures/deployment.ts'
 import { gitEnv } from './fixtures/git.ts'
@@ -92,6 +92,28 @@ describe('agent git configuration', () => {
     await expect(git('-C', 'repo', 'commit', '--allow-empty', '-q', '-m', 'without identity')).rejects.toMatchObject({ stderr: expect.stringContaining('no email was given') })
     await git('-C', 'repo', '-c', 'user.name=Alice', '-c', 'user.email=alice@example.com', 'commit', '--allow-empty', '-q', '-m', 'with identity')
     expect(await git('-C', 'repo', 'log', '-1', '--format=%an <%ae> / %cn <%ce>')).toBe('Alice <alice@example.com> / Alice <alice@example.com>')
+  })
+  it('gives a worker Session\'s plain git commit the agent\'s identity over a clone\'s own, and keeps the sandbox\'s placeholders out of git add -A', async () => {
+    const deployment = testDeployment({ stateDir: dir })
+    await writeEnvironment(deployment, [])
+    expect(readFileSync(sandboxIgnore(dir), 'utf8').split('\n')).toEqual(expect.arrayContaining(['/.bashrc', '/.claude/settings.json', '/.vscode']))
+    // A worker Session's environment reaches Claude Code as given; only prepare commands drop credential-shaped names such as GIT_CONFIG_KEY_0.
+    const env = { ...workerEnv({ PATH: process.env.PATH, HOME: dir, ...agentVariables(dir) }), ...workerGitVariables(dir, deployment.github, true) }
+    const git = async (...args: string[]): Promise<string> => (await exec('git', ['-C', 'repo', ...args], { cwd: dir, env })).stdout.trim()
+    await exec('git', ['init', '-q', 'repo'], { cwd: dir, env })
+    await git('config', 'user.name', 'Operator'); await git('config', 'user.email', 'operator@example.com')
+    for (const file of ['.bashrc', '.vscode/settings.json', '.claude/settings.json', '.claude/rules.md', 'docs/.bashrc', 'README.md']) {
+      mkdirSync(join(dir, 'repo', file, '..'), { recursive: true }); writeFileSync(join(dir, 'repo', file), 'x\n')
+    }
+    await git('add', '-A')
+    expect((await git('diff', '--cached', '--name-only')).split('\n')).toEqual(['.claude/rules.md', 'README.md', 'docs/.bashrc'])
+    await git('commit', '-q', '-m', 'as the agent')
+    expect(await git('log', '-1', '--format=%an <%ae> / %cn <%ce>')).toBe(`${deployment.github.login} <${deployment.github.noreply}> / ${deployment.github.login} <${deployment.github.noreply}>`)
+    await git('commit', '-q', '--allow-empty', '--author', 'Alice <alice@example.com>', '-m', 'for Alice')
+    expect(await git('log', '-1', '--format=%an / %cn')).toBe(`Alice / ${deployment.github.login}`)
+    // Unsandboxed, git takes nothing from the ignore file.
+    expect(workerGitVariables(dir, deployment.github, false)).toEqual({ GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'user.name',
+      GIT_CONFIG_VALUE_0: deployment.github.login, GIT_CONFIG_KEY_1: 'user.email', GIT_CONFIG_VALUE_1: deployment.github.noreply })
   })
 })
 

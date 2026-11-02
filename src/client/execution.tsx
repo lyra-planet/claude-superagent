@@ -77,9 +77,11 @@ export function ExecutionSettings() {
   const { blocks, environment, sources } = useSettings().settings
   // Keep raw user text (such as separators between blocked commands) in the draft and parse only on save.
   const executor = blocks.executor.value
-  const saved = { ...executor, maxWorkers: String(executor.maxWorkers), blockedCommands: executor.blockedCommands.join(' ') }
+  const saved = { ...executor, maxWorkers: String(executor.maxWorkers), blockedCommands: executor.blockedCommands.join(' '),
+    networkDomains: executor.networkDomains.join(' ') }
+  const words = (text: string) => text.split(/[\s,]+/).filter(Boolean)
   const draft = useBlockDraft('executor', saved, blocks.executor.revision,
-    value => ({ ...value, maxWorkers: numberOf(value.maxWorkers), blockedCommands: value.blockedCommands.split(/[\s,]+/).filter(Boolean) }))
+    value => ({ ...value, maxWorkers: numberOf(value.maxWorkers), blockedCommands: words(value.blockedCommands), networkDomains: words(value.networkDomains) }))
   const value = draft.value
   const edit = (next: Partial<typeof value>) => draft.edit({ ...value, ...next })
   const prepare = useRef<HTMLTextAreaElement>(null)
@@ -122,6 +124,10 @@ export function ExecutionSettings() {
             <SegmentedControl className="dt-segmented dt-field-segmented" label={t('sandbox')} value={value.sandbox}
               options={(['on', 'weak', 'off'] as const).map(mode => ({ value: mode, label: t(`sandbox.${mode}`) }))}
               onChange={mode => edit({ sandbox: mode })} />
+          </Field>
+          <Field label={t('networkDomains')} hint={t('networkDomainsHint')}>
+            <Input className="dt-mono" value={value.networkDomains} placeholder={t('networkDomainsNone')} spellCheck={false}
+              disabled={value.sandbox === 'off'} onChange={event => edit({ networkDomains: event.target.value })} />
           </Field>
         </div>
       </Fields>

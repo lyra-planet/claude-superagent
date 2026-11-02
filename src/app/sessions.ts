@@ -54,8 +54,8 @@ export interface SessionsHost {
   tools(ticket?: Ticket): Tool[]
   /** The hooks of `ticket`'s worker. */
   hooks(ticket: Ticket): Partial<Record<HookEvent, HookCallbackMatcher[]>>
-  /** The sandbox and Bash settings of workers. */
-  sandbox(): Pick<Options, 'sandbox'> & { bash: boolean }
+  /** How workers' Bash runs: the sandbox, whether Bash is approved outright, and the variables it adds to the environment. */
+  shell(): Pick<Options, 'sandbox'> & { bash: boolean; env: Record<string, string> }
 }
 
 /** A tool's result as MCP content: its value as JSON, and an image it carries as image content. */
@@ -163,13 +163,13 @@ export class Sessions {
     const prompt = `${this.host.prompts.compose(version.config, 'worker', this.host.variables(current))}\n${mandateInstructions(current.mandate)}`.trimEnd()
     const plugin = await this.writeSkills(version)
     this.bind(workerSessionId(ticket.id), version.revision)
-    const { bash, ...sandbox } = this.host.sandbox()
+    const { bash, env, ...sandbox } = this.host.shell()
     const options: SessionStart['options'] = {
       ...modelOptions(settings.executor.model),
       systemPrompt: { type: 'preset', preset: 'claude_code', append: `[claude-superagent prompt revision ${version.revision}]\n${prompt}` },
       mcpServers: { [MCP_SERVER]: mcpServer(this.host.tools(current)) }, disallowedTools: WORKER_DENIED,
       allowedTools: bash ? [...WORKER_ALLOWED, 'Bash'] : WORKER_ALLOWED, permissionMode: 'dontAsk', ...sandbox,
-      hooks: this.host.hooks(current), plugins: [{ type: 'local', path: plugin }], settingSources: [], env: this.host.environment(),
+      hooks: this.host.hooks(current), plugins: [{ type: 'local', path: plugin }], settingSources: [], env: { ...this.host.environment(), ...env },
       stderr: line => { this.host.logger.warn('worker %s: %s', ticket.id.slice(0, 12), line.trimEnd()) },
     }
     return { options, fingerprint: key(JSON.stringify({ prompt, model: settings.executor.model, revision: version.revision })) }

@@ -87,7 +87,8 @@ From GitHub, an account on the allowed list comments `@<agent login> <request>` 
 
 - Workers run in `dontAsk` mode: what is not allowed is denied, never prompted.
 - A `PreToolUse` hook ([src/app/hooks.ts](src/app/hooks.ts)) denies, with a reason the worker reads: merging or enabling auto-merge as the agent, deleting or reconfiguring anything on GitHub, `gh auth`, reading credential files, posting to chats directly, signalling processes, the commands the panel blocks, and any tool call once its ticket ended.
-- The sandbox setting decides Bash: `on` runs it in Claude Code's sandbox, `weak` in its weaker mode for containers that cannot mount `/proc` (files and network stay in, other processes' `/proc` does not), `off` runs it as the service's user. The hook applies in every mode. None of this is a boundary against a determined program: run the service as an OS user that holds only the agent's credentials.
+- The sandbox setting decides Bash: `on` runs it in Claude Code's sandbox, `weak` in its weaker mode for containers that cannot mount `/proc` (files and network stay in, other processes' `/proc` does not), `off` runs it as the service's user. Sandboxed Bash reaches GitHub and the domains listed in the panel (Execution → other domains the sandbox reaches), such as a package registry the tests need. The hook applies in every mode. None of this is a boundary against a determined program: run the service as an OS user that holds only the agent's credentials, and know that a worker's commands see the service's environment.
+- Workers commit as the agent account with a plain `git commit`: the host sets the identity, since Claude Code refuses `git -c` without asking.
 - Every Claude Code process it starts reads no settings, hooks or skills of yours (`settingSources: []`) and keeps its sessions in the state directory.
 
 ## Develop

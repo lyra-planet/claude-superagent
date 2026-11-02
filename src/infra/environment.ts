@@ -19,6 +19,14 @@ import { WORKER_COMMANDS } from './worker-commands.ts'
 export { WORKER_COMMANDS }
 export const workerBin = (stateDir: string): string => join(stateDir, 'worker-bin')
 export const workerGitConfig = (stateDir: string): string => join(stateDir, 'worker-gitconfig')
+export const sandboxIgnore = (stateDir: string): string => join(stateDir, 'sandbox-gitignore')
+/**
+ * What Claude Code 2.1's Bash sandbox mounts over in the working directory while a command runs, so that a command cannot write
+ * the shell, git, editor or Claude Code configuration it would be run with. They are device files git cannot add.
+ */
+export const SANDBOX_PLACEHOLDERS = ['.bash_profile', '.bashrc', '.gitconfig', '.gitmodules', '.idea', '.mcp.json', '.profile', '.ripgreprc', '.vscode',
+  '.zprofile', '.zshrc', ...['.cc-writes', 'agents', 'commands', 'hooks', 'launch.json', 'loop.md', 'output-styles', 'routines', 'scheduled_tasks.json',
+    'settings.json', 'settings.local.json', 'skills', 'workflows'].map(name => `.claude/${name}`)]
 const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`
 const gitQuote = (value: string): string => `"${value.replace(/[\\"]/g, char => `\\${char}`)}"`
 export const credentialHelper = (cli: string): string => `!${shellQuote(cli)} auth git-credential`
@@ -56,6 +64,17 @@ export function agentVariables(stateDir: string): Record<string, string | undefi
     // Clear operator commit identity variables; prompts specify commit identity and operator env vars would override what a worker sets.
     GIT_AUTHOR_NAME: undefined, GIT_COMMITTER_NAME: undefined, GIT_AUTHOR_EMAIL: undefined, GIT_COMMITTER_EMAIL: undefined,
   }
+}
+
+/**
+ * git configuration a worker Session's commands get through the environment, which outranks a clone's own config: the agent's
+ * identity, since Claude Code denies `git -c` and `VAR=… git` without asking, so a worker commits with a plain `git commit`
+ * (`--author` for another author); and, sandboxed, `sandboxIgnore`, since `git add -A` fails on the sandbox's placeholders.
+ */
+export function workerGitVariables(stateDir: string, agent: { login: string; noreply: string } | undefined, sandboxed: boolean): Record<string, string> {
+  const config = [...agent ? [['user.name', agent.login], ['user.email', agent.noreply]] : [], ...sandboxed ? [['core.excludesFile', sandboxIgnore(stateDir)]] : []]
+  return { GIT_CONFIG_COUNT: String(config.length),
+    ...Object.fromEntries(config.flatMap(([name, value], index) => [[`GIT_CONFIG_KEY_${index}`, name!], [`GIT_CONFIG_VALUE_${index}`, value!]])) }
 }
 
 /** True when a regular file starts with this host's marker in its first two lines; a symbolic link, directory, or other non-regular file never counts as written by claude-superagent. */
@@ -114,6 +133,8 @@ export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' |
     // Include Git LFS filters because the operator's global gitconfig (which usually holds them) is ignored.
     '[filter "lfs"]', '\tclean = git-lfs clean -- %f', '\tsmudge = git-lfs smudge -- %f', '\tprocess = git-lfs filter-process', '\trequired = true',
   ].join('\n') + '\n')
+  // Sandboxed workers' git reads it as core.excludesFile; anchored at the repository root, so a nested file of the name still counts.
+  await own(sandboxIgnore(stateDir), [MARKER, ...SANDBOX_PLACEHOLDERS.map(path => `/${path}`)].join('\n') + '\n')
 }
 
 /** Applies environment overrides and prepends worker shims to `process.env.PATH`, returning a restore callback. */
