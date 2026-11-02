@@ -64,8 +64,9 @@ it('shows the agent\'s replies, its tickets\' changes once each and what their w
   const { all, type, enter, app } = draw(s.props)
   await waitUntil(() => all().includes('conversation c1'))
   s.emit({ type: 'message', conversation: 'c1', message: { id: 'm3', from: 'agent', at: '', text: 'PR #2 is ready.', agent: true, kind: 'reply' } })
-  s.emit({ type: 'ticket', ticket: ticket({ stage: 'person', action: 'review', threads: [{ key: 'github:2', source: 'github', title: 'PR', url: 'https://github.com/acme/widgets/pull/2', facts: {} }] } as never) })
-  s.emit({ type: 'ticket', ticket: ticket({ stage: 'person', action: 'review' } as never) })
+  const pull = [{ key: 'github:2', source: 'github', title: 'PR', url: 'https://github.com/acme/widgets/pull/2', facts: {} }]
+  s.emit({ type: 'ticket', ticket: ticket({ stage: 'person', action: 'review', threads: pull } as never) })
+  s.emit({ type: 'ticket', ticket: ticket({ stage: 'person', action: 'review', threads: pull, summary: 'saved again' } as never) })
   s.emit({ type: 'activity', ticketId: 'a1b2c3d4e5f6', lines: [{ kind: 'tool', text: 'Bash(git push)' }] })
   s.emit({ type: 'message', conversation: 'other', message: { id: 'm9', from: 'agent', at: '', text: 'elsewhere', agent: true, kind: 'reply' } })
   await waitUntil(() => all().includes('⎿ Bash(git push)'))
@@ -128,4 +129,15 @@ it('sends what arrives in one piece with a line break at its end, as a fast typi
   await type('line one\nline two\r')
   await waitUntil(() => s.client.ask.mock.calls.length === 1)
   expect(s.client.ask).toHaveBeenCalledWith('line one line two', 'c1')
+})
+
+it('prints a ticket\'s line again only when what it shows changed', async () => {
+  const s = service()
+  const { app, all } = draw(s.props)
+  await waitUntil(() => all().includes('conversation c1'))
+  s.emit({ type: 'ticket', ticket: ticket({ id: 'b0b0b0b0b0b0', stage: 'working', action: 'run' } as never) })
+  s.emit({ type: 'ticket', ticket: ticket({ id: 'b0b0b0b0b0b0', stage: 'working', action: 'wait' } as never) })
+  s.emit({ type: 'ticket', ticket: ticket({ id: 'b0b0b0b0b0b0', stage: 'idle' } as never) })
+  await waitUntil(() => app.lastFrame()!.includes('◆ b0b0b0 Fix the README typo · waiting for a message'))
+  expect(app.lastFrame()!.split('◆ b0b0b0 Fix the README typo · working').length - 1).toBe(1)
 })

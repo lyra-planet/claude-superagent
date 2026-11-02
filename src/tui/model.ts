@@ -35,8 +35,8 @@ export const ticketEntry = (ticket: TerminalTicket): Entry => {
   const pull = pullOf(ticket)
   return entry('ticket', `${short(ticket.id)} ${ticket.title} · ${stageText(ticket)}${pull ? ` · ${pull}` : ''}`, ticket.held ? 'held' : ticket.state === 'ended' ? 'ended' : ticket.stage)
 }
-/** What changed of a ticket that the terminal reports: its stage, a hold, its end. */
-export const ticketMark = (ticket: TerminalTicket): string => `${ticket.state}:${ticket.stage}:${'action' in ticket ? String(ticket.action) : ''}:${ticket.held}`
+/** What of a ticket the terminal reports: its line as shown, so a save that changes nothing shown prints nothing. */
+export const ticketMark = (ticket: TerminalTicket): string => ticketEntry(ticket).text
 
 /** The terminal's commands; anything else is a message to the agent. */
 export const COMMANDS: readonly { name: string; args?: string; about: string }[] = [
