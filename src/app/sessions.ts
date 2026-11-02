@@ -61,6 +61,8 @@ export interface SessionsHost {
   shell(): Pick<Options, 'sandbox'> & { bash: boolean; env: Record<string, string> }
   /** The Agent SDK the Sessions call; tests pass a stand-in. */
   readonly sdk?: Sdk
+  /** Every message a Session's query yields, for the terminal's view of what Sessions do. */
+  activity?(sessionId: string, message: SDKMessage): void
 }
 
 /** A tool's result as MCP content: its value as JSON, and an image it carries as image content. */
@@ -106,6 +108,8 @@ function modelOptions(model: RoleModel | null): Pick<Options, 'model' | 'effort'
 export class Sessions {
   readonly router: ClaudeSession
   private readonly workers = new Map<string, ClaudeSession>()
+  /** The ticket of each worker Session made, by Session id. */
+  private readonly tickets = new Map<string, string>()
   /** Sessions waiting on a model usage limit, by Session id. */
   private readonly retries = new Map<string, { attempts: number; since: string; lastAt: string; status: number | null; error: string }>()
   private readonly skillDirs = new Map<number, Promise<string>>()
@@ -130,7 +134,7 @@ export class Sessions {
       const id = workerSessionId(ticketId)
       session = new ClaudeSession(id, ticket().execution?.directory ?? '', () => this.workerStart(ticket()), this.events(`worker ${ticketId.slice(0, 12)}`, events),
         this.host.sdk, this.ledger(id))
-      this.workers.set(ticketId, session)
+      this.workers.set(ticketId, session); this.tickets.set(id, ticketId)
     }
     return session
   }
@@ -143,7 +147,7 @@ export class Sessions {
   /** Events every Session reports to Sessions, around those of its owner: model retries for health, and failures for the log. */
   private events(label: string, more: SessionEvents): SessionEvents {
     return { ...more,
-      message: (session, message) => { this.observe(session.id, message); more.message?.(session, message) },
+      message: (session, message) => { this.observe(session.id, message); this.host.activity?.(session.id, message); more.message?.(session, message) },
       idle: (session, result) => { this.clearRetry(session.id); more.idle?.(session, result) },
       ended: (session, error) => {
         this.clearRetry(session.id)
@@ -152,6 +156,8 @@ export class Sessions {
       },
     }
   }
+  /** The ticket whose worker a Session is, or undefined for the router. */
+  ticketOf(sessionId: string): string | undefined { return this.tickets.get(sessionId) }
   /** Deliver to the router once per uuid, restarting its Session first when it is idle and its prompt or options changed. */
   private async toRouter(uuid: string, text: string, delivery: Delivery, authorize?: () => void): Promise<void> {
     if (this.router.open && !this.router.busy && await this.router.stale()) await this.router.close()

@@ -24,19 +24,22 @@ interface LocalStore { get: SourceContext['state']['get']; set: SourceContext['s
 
 const threadId = (conversation: string) => conversation
 const messages = (state: LocalStore, conversation: string): LocalMessage[] => state.get(KV.local.messages(conversation)) ?? []
-function append(state: LocalStore, conversation: string, message: LocalMessage): void {
+/** Hears each message a conversation gets, once. */
+export type LocalObserver = (conversation: string, message: LocalMessage) => void
+function append(state: LocalStore, conversation: string, message: LocalMessage, observe?: LocalObserver): void {
   const log = messages(state, conversation)
   if (log.some(item => item.id === message.id)) return
   state.set(KV.local.messages(conversation), [...log, message])
   const known = state.get(KV.local.conversations) ?? []
   if (!known.includes(conversation)) state.set(KV.local.conversations, [...known, conversation])
+  observe?.(conversation, message)
 }
 
 /**
  * The local Source with its Channel and Thread reader bound to `state`, which the runtime gives it once the Source's context
  * exists. A reply goes into its conversation's log, once per outbound message id.
  */
-export function localSource(): SourcePlugin<LocalConfig> & { attach(ctx: SourceContext): void; handler(): LocalHandler } {
+export function localSource(observe?: LocalObserver): SourcePlugin<LocalConfig> & { attach(ctx: SourceContext): void; handler(): LocalHandler } {
   let context: SourceContext | undefined
   const state = (): LocalStore => {
     if (!context) throw new Error('The local Source is not attached yet')
@@ -55,7 +58,7 @@ export function localSource(): SourcePlugin<LocalConfig> & { attach(ctx: SourceC
       send: async (_host, message) => {
         const conversation = message.channel.address.conversation ?? ''
         append(state(), conversation, { id: message.id, from: 'agent', at: new Date().toISOString(), text: message.text, agent: true, kind: message.kind,
-          ...message.ticketId ? { ticketId: message.ticketId } : {} })
+          ...message.ticketId ? { ticketId: message.ticketId } : {} }, observe)
         return 'sent'
       },
       link: address => ({ url: '', label: { zh: `终端对话 ${address.conversation ?? ''}`, en: `Terminal conversation ${address.conversation ?? ''}` } }),
@@ -97,7 +100,7 @@ export function localSource(): SourcePlugin<LocalConfig> & { attach(ctx: SourceC
     handler: () => localHandler(() => {
       if (!context) throw new Error('The local Source is not attached yet')
       return context
-    }),
+    }, observe),
   }
 }
 
@@ -116,7 +119,7 @@ const AskSchema = z.object({ text: z.string().trim().min(1).max(20000), conversa
  * the conversation and the Trigger; `GET /local/conversations` lists them; `GET /local/conversations/<id>` reads one, with its
  * messages after `?after=<n>`.
  */
-export function localHandler(ctx: () => SourceContext): LocalHandler {
+export function localHandler(ctx: () => SourceContext, observe?: LocalObserver): LocalHandler {
   const json = (res: ServerResponse, status: number, value: unknown) => {
     res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(value))
   }
@@ -130,7 +133,7 @@ export function localHandler(ctx: () => SourceContext): LocalHandler {
         const ask = AskSchema.parse(await body())
         const conversation = ask.conversation ?? randomUUID().slice(0, 18)
         const message: LocalMessage = { id: randomUUID(), from: operator, at: new Date().toISOString(), text: ask.text }
-        append(source.state, conversation, message)
+        append(source.state, conversation, message, observe)
         const trigger = localTrigger(message, conversation)
         const received = await source.receive(trigger)
         source.threads.describe(`${SOURCE}:${conversation}`, { label: ask.text.replace(/\s+/g, ' ').slice(0, 60) })

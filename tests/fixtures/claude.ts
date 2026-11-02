@@ -71,6 +71,12 @@ export class FakeQuery {
   }
   /** The model takes its next step, which takes the messages steered in since its last. */
   step(): void { if (this.status === 'running') this.take(false) }
+  /** The model says something or calls tools: an assistant message with these content blocks, kept in the history too. */
+  assistant(...content: Record<string, unknown>[]): void {
+    const message = { type: 'assistant', uuid: `a-${this.session.history.length}`, parent_tool_use_id: null, message: { role: 'assistant', content } }
+    this.session.history.push(message as never)
+    this.emit(message)
+  }
   /** The turn ends with a result; what waits starts the next one, else the Session goes idle. */
   end(result: { result?: string; subtype?: string; is_error?: boolean; errors?: string[] } = {}): void {
     if (this.status !== 'running') throw new Error(`The Session ${this.session.id} runs no turn`)
@@ -106,13 +112,14 @@ export class FakeQuery {
 }
 /** A Session on disk: its history, and the query that runs it, if any. */
 export class FakeSession {
-  readonly history: { type: 'user'; uuid: string; message: unknown }[] = []
+  readonly history: { type: 'user' | 'assistant'; uuid: string; message: unknown }[] = []
   query?: FakeQuery
   constructor(readonly id: string) {}
   /** The running query; throws when none runs. */
   get running(): FakeQuery { if (!this.query) throw new Error(`No query runs the Session ${this.id}`); return this.query }
   get status(): 'idle' | 'running' { return this.query?.status ?? 'idle' }
   step(): void { this.running.step() }
+  assistant(...content: Record<string, unknown>[]): void { this.running.assistant(...content) }
   end(result?: Parameters<FakeQuery['end']>[0]): void { this.running.end(result) }
   task(type?: string, description?: string): string { return this.running.task(type, description) }
   taskEnd(id: string, status?: string): void { this.running.taskEnd(id, status) }

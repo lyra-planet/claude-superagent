@@ -39,6 +39,8 @@ export const KV = {
     inbox: family<QueuedMessage[], [session: string]>('session-inbox:'),
     /** The model a Session was made with, which it keeps (null: Claude Code's default). */
     model: family<RoleModel | null, [session: string]>('session-model:') },
+  /** Executor: the tickets whose worker Session a person holds to work in it directly. */
+  executor: { held: record<string[]>('executor-held') },
   /** Schema 11 migration: legacy main-Session queues imported into the effect table. */
   queues: { relays: record<{ id: string; text: string }[]>('relay-queue'), unsubscribed: record<string[]>('subscription-results'),
     prompts: record<number | null>('prompt-notification'), settings: record<number | null>('settings-notification') },

@@ -1,4 +1,5 @@
 /** The composition root of claude-superagent: one process, one state directory, its Sessions, Sources and management server. */
+import { EventEmitter } from 'node:events'
 import { mkdirSync } from 'node:fs'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { join } from 'node:path'
@@ -6,7 +7,7 @@ import { lockSync } from 'proper-lockfile'
 import { Engine, type EngineForSettings, type ReceiveResult, type Ticket, type Trigger } from '../core/index.ts'
 import type { Deployment, Machine } from '../deployment.ts'
 import { ClaudeExecutor } from '../executor/claude.ts'
-import { stableUuid, sourceTrigger } from '../executor/common.ts'
+import { stableUuid, sourceTrigger, workerSessionId } from '../executor/common.ts'
 import { Commands } from '../infra/commands.ts'
 import { nodeSubprocess, workerGitVariables, type SubprocessRuntime } from '../infra/environment.ts'
 import { HealthBoard } from '../infra/health.ts'
@@ -19,8 +20,9 @@ import { githubSource } from '../sources/github.ts'
 import { pullEndNotices } from '../sources/github-pull.ts'
 import { health, type Health, type SourceContext, type SourceHost } from '../sources/host.ts'
 import type { SourcePlugin } from '../sources/kind.ts'
-import { localSource } from '../sources/local.ts'
+import { localSource, SOURCE as LOCAL, type LocalMessage } from '../sources/local.ts'
 import { SourceRegistry } from '../sources/registry.ts'
+import { activityOf, type ActivityLine } from './activity.ts'
 import { MasterAssessor } from './assessment.ts'
 import { TextCache } from './cache.ts'
 import type { SessionRecord } from './context.ts'
@@ -45,8 +47,15 @@ import { mainTools, type MainToolsHost } from './tools/main.ts'
 import type { Tool } from './tools/tool.ts'
 import { AGENT_SDK, type Sdk } from './session.ts'
 import { evalsHealth } from './views/overview.ts'
-import type { LinkTarget } from './views/records.ts'
+import { snapshot, type LinkTarget } from './views/records.ts'
+import { ticketRow } from './views/tickets.ts'
 
+/** A ticket as the terminal lists it: its row in the panel, the terminal conversation it started in, and whether a person holds its Session. */
+export type TerminalTicket = ReturnType<typeof ticketRow> & { conversation?: string; held: boolean; sessionId: string }
+/** What happens, as the terminal follows it live (`GET /local/events`). */
+export type LiveEvent = { type: 'message'; conversation: string; message: LocalMessage }
+  | { type: 'ticket'; ticket: TerminalTicket }
+  | { type: 'activity'; ticketId?: string; lines: ActivityLine[] }
 /** A handler a Source or the panel adds to the management server: true when it answered the request. */
 export type Route = (req: IncomingMessage, res: ServerResponse, pathname: string) => Promise<boolean>
 export interface RuntimeOptions {
@@ -89,7 +98,9 @@ export class Runtime implements SourceHost {
   readonly engine: Engine
   readonly passes: Passes
   readonly masterId: string
-  readonly local = localSource()
+  /** What happens, for the terminal: messages of terminal conversations, ticket changes, what Sessions do. */
+  readonly bus = new EventEmitter<{ event: [LiveEvent] }>()
+  readonly local = localSource((conversation, message) => { this.bus.emit('event', { type: 'message', conversation, message }) })
   readonly plugins: readonly SourcePlugin[]
   private readonly board = new HealthBoard()
   private readonly runtimeHealth = this.board.claim('runtime', { state: 'starting', detail: '' })
@@ -138,7 +149,10 @@ export class Runtime implements SourceHost {
         variables: ticket => setup.configured() ? (ticket ? this.ticketEnvironment(ticket) : deployed()) : undefined,
         tools: ticket => ticket ? executorTools(this.toolHost, ticket) : mainTools(this.toolHost, masterId),
         hooks: ticket => workerHooks(ticket.id, { ticket: id => store.tickets.get(id), blocked: () => store.settings().executor.blockedCommands }),
-        shell: () => this.shell(), sdk: this.sdk })
+        shell: () => this.shell(), sdk: this.sdk, activity: (sessionId, message) => {
+          const lines = activityOf(message)
+          if (lines.length) this.bus.emit('event', { type: 'activity', ...this.sessions.ticketOf(sessionId) ? { ticketId: this.sessions.ticketOf(sessionId) } : {}, lines })
+        } })
       mkdirSync(join(machine.stateDir, 'router'), { recursive: true })
       const resources: ResourceHost = { store, pages: new TextCache(4_000_000), prompts, commands, masterId,
         transcript: sessionId => this.sdk.getSessionMessages(sessionId).then(messages => messages as SessionRecord[], () => []),
@@ -164,6 +178,12 @@ export class Runtime implements SourceHost {
           const followed = !this.quiet && (event.type === 'trigger.received' || event.type === 'ticket.resumed' || event.type === 'trigger.followup')
           const followup = followed ? followupNotice(store, sources, event.data.triggerId) : undefined
           if (followup) sessions.relay(followup.id, followup.text)
+          // The terminal hears of a ticket's change once it is committed.
+          const changed = (event.data as { ticketId?: unknown }).ticketId
+          if (typeof changed === 'string' && this.bus.listenerCount('event')) store.afterCommit(() => {
+            const row = this.terminalTicket(changed)
+            if (row) this.bus.emit('event', { type: 'ticket', ticket: row })
+          })
           const ended = event.type === 'ticket.ended' ? store.tickets.get(event.data.ticketId) : undefined
           if (ended && setup.configured()) {
             const request = store.triggers.get(ended.origin.triggerId)?.text ?? ''
@@ -189,6 +209,15 @@ export class Runtime implements SourceHost {
   }
   get health(): Readonly<Record<string, Health>> { return this.board.all }
   private get sdk(): Sdk { return this.options.sdk ?? AGENT_SDK }
+  /** A ticket as the terminal shows it. */
+  terminalTicket(id: string): TerminalTicket | undefined {
+    const ticket = this.store.tickets.get(id)
+    if (!ticket) return undefined
+    const origin = this.store.triggers.get(ticket.origin.triggerId)
+    const conversation = origin?.source === LOCAL ? String(origin.meta.conversation ?? '') : ''
+    return { ...ticketRow(snapshot({ store: this.store, sources: this.sources, links: this.links() }), ticket), ...conversation ? { conversation } : {},
+      held: this.executor.held(id), sessionId: workerSessionId(id) }
+  }
   /** Resolves once the Passes and the effects that can run are done. */
   idle(): Promise<void> { return this.passes.idle() }
   /** Run a pass now. */
@@ -320,6 +349,7 @@ export class Runtime implements SourceHost {
         if (await api(req, res, pathname)) return
         if (pathname.startsWith('/local/')) {
           if (!sameOrigin(req, port, allowedHosts)) { res.writeHead(403); res.end(); return }
+          if (await this.terminal(req, res, pathname)) return
           await local(req, res, pathname, () => readJson(req)); return
         }
         if (this.options.panel && await this.options.panel(req, res, pathname)) return
@@ -332,6 +362,46 @@ export class Runtime implements SourceHost {
       server.once('error', reject)
       server.listen(this.machine.port, '127.0.0.1', () => { server.off('error', reject); resolve() })
     })
+  }
+  /**
+   * The terminal's routes beside the terminal Source's: `GET /local/events` streams what happens (server-sent events);
+   * `GET /local/tickets` lists the tickets; `GET /local/tickets/<id>/activity` reads what its worker did; `POST
+   * /local/tickets/<id>/hold` hands its worker's Session to a person (`{ now }` cuts its turn short) and answers where it is;
+   * `POST /local/tickets/<id>/release` hands it back.
+   */
+  private async terminal(req: IncomingMessage, res: ServerResponse, pathname: string): Promise<boolean> {
+    const json = (status: number, value: unknown) => { res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(value)) }
+    if (req.method === 'GET' && pathname === '/local/events') {
+      res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store', connection: 'keep-alive' })
+      res.write(': claude-superagent\n\n')
+      const send = (event: LiveEvent) => { res.write(`data: ${JSON.stringify(event)}\n\n`) }
+      const beat = setInterval(() => { res.write(': beat\n\n') }, 15_000)
+      beat.unref?.()
+      const end = () => { clearInterval(beat); this.bus.off('event', send) }
+      this.bus.on('event', send)
+      req.on('close', end); this.lifetime.addEventListener('abort', () => { end(); res.end() }, { once: true })
+      return true
+    }
+    if (req.method === 'GET' && pathname === '/local/tickets') {
+      json(200, { tickets: this.store.tickets.list().sort((a, b) => b.createdAt.localeCompare(a.createdAt)).flatMap(ticket => this.terminalTicket(ticket.id) ?? []) })
+      return true
+    }
+    const route = /^\/local\/tickets\/([a-f0-9]{8,64})\/(activity|hold|release)$/.exec(pathname)
+    const ticket = route ? this.store.tickets.get(route[1]!) : undefined
+    if (!route) return false
+    if (!ticket) { json(404, { error: 'Ticket not found' }); return true }
+    if (req.method === 'GET' && route[2] === 'activity') {
+      const limit = Math.min(500, Number(new URL(req.url ?? '/', 'http://localhost').searchParams.get('limit') ?? 60) || 60)
+      const history = await this.sdk.getSessionMessages(workerSessionId(ticket.id), { dir: ticket.execution?.directory ?? '' }).catch(() => [])
+      json(200, { lines: history.flatMap(message => activityOf(message)).slice(-limit) }); return true
+    }
+    if (req.method === 'POST' && route[2] === 'hold') {
+      const body = await readJson(req).catch(() => ({})) as { now?: unknown }
+      const { stopped } = await this.executor.hold(ticket.id, body?.now === true)
+      json(200, { sessionId: workerSessionId(ticket.id), cwd: ticket.execution?.directory ?? '', claudeConfigDir: this.machine.claudeConfigDir, stopped }); return true
+    }
+    if (req.method === 'POST' && route[2] === 'release') { this.executor.release(ticket.id); json(200, { released: true }); return true }
+    return false
   }
   /** Idempotent stop: concurrent or repeated calls share one shutdown. */
   stop(): Promise<void> { return this.stopping ??= this.shutdown() }

@@ -14,6 +14,7 @@ import type { Variable } from '../app/execution-environment.ts'
 import { resultRelay } from '../app/notices.ts'
 import { subagent, type ClaudeSession } from '../app/session.ts'
 import type { Sessions } from '../app/sessions.ts'
+import { KV } from '../kv.ts'
 import { ASSIGNMENT_CHARS, BACKGROUND_LIMIT_MS, PREPARE_TIMEOUT_MS, PrepareFailed, RETRIED, SHUTDOWN_STOP_MS, SLOT_WAIT_MS, TRANSIENT_BACKOFF_MS,
   TRANSIENT_TRIES, WorkerSlots, batchLine, batchOf, capped, fromPerson, inputMessage, inputResource, sourceTrigger, ticketExecution, transient,
   triggerMessage } from './common.ts'
@@ -34,7 +35,7 @@ export function until<T>(work: Promise<T>, signal?: AbortSignal, ms?: number): P
 export interface ExecutorHost {
   readonly engine: Pick<EngineForExecutor, 'assignmentStarted' | 'inputsDelivered' | 'inputsRead' | 'turnEnded' | 'deliveryFailed' | 'report'
     | 'assignmentInterrupted'>
-  readonly store: Pick<Store, 'tickets' | 'triggers' | 'settings' | 'atomic' | 'afterCommit'>
+  readonly store: Pick<Store, 'tickets' | 'triggers' | 'settings' | 'atomic' | 'afterCommit' | 'get' | 'set'>
   readonly effects: Pick<Effects, 'enqueue' | 'handle'>
   /** The `worker` health entry: whether handling worker Session events failed. */
   readonly health: HealthEntry
@@ -126,10 +127,44 @@ export class ClaudeExecutor implements Executor {
    * not count as the worker handing off with its earlier report.
    */
   personWorked(ticketId: string): void { this.personal.set(ticketId, now()) }
+  /**
+   * A person takes the worker's Session to work in it directly, in Claude Code's own terminal (`claude-superagent open`), as
+   * upstream let a person open an Executor Session in DSH's UI. Two processes may not write one Session, so the worker's turn
+   * ends first (`now` cuts it short), its query closes with its background tasks, and nothing reaches it until `release`:
+   * Inputs and launches wait, and it holds no slot. The hold outlives a restart.
+   */
+  async hold(ticketId: string, now = false): Promise<{ stopped: number }> {
+    this.setHeld(ticketId, true)
+    this.settling.get(ticketId)?.abort()
+    const session = this.host.sessions.worker(ticketId)
+    if (!session) return { stopped: 0 }
+    if (session.working) {
+      if (now) await session.interrupt()
+      await until(session.whenIdle(), this.host.lifetime)
+    }
+    const stopped = session.background.length
+    await session.close()
+    return { stopped }
+  }
+  /** The person is done in the Session: their turns there are their work, and what waited for the worker reaches it now. */
+  release(ticketId: string): void {
+    if (!this.held(ticketId)) return
+    this.setHeld(ticketId, false)
+    this.personWorked(ticketId)
+    const ticket = this.current(ticketId)
+    const running = ticket && liveTicket(ticket) ? runningAssignment(ticket) : undefined
+    if (ticket && running && ticket.undelivered.length) this.deliver(ticket, running)
+  }
+  /** Whether a person holds the worker's Session (`hold`). */
+  held(ticketId: string): boolean { return (this.host.store.get(KV.executor.held) ?? []).includes(ticketId) }
+  private setHeld(ticketId: string, held: boolean): void {
+    const others = (this.host.store.get(KV.executor.held) ?? []).filter(id => id !== ticketId)
+    this.host.store.set(KV.executor.held, held ? [...others, ticketId] : others)
+  }
 
   /** Whether a ticket's worker holds a slot: its turn runs or waits to, or a look at its background work runs. */
   private running(ticket: Ticket): boolean {
-    if (!runningAssignment(ticket)) return false
+    if (!runningAssignment(ticket) || this.held(ticket.id)) return false
     return !!this.host.sessions.worker(ticket.id)?.working || this.settling.has(ticket.id)
   }
   private current(ticketId: string): Ticket | undefined { return this.host.store.tickets.get(ticketId) }
@@ -166,6 +201,7 @@ export class ClaudeExecutor implements Executor {
     const ticket = this.current(ticketId)
     const assignment = ticket && latestAssignment(ticket)
     if (!ticket || !liveTicket(ticket) || assignment?.id !== assignmentId || assignment.state !== 'pending') return
+    if (this.held(ticketId)) throw new Later('A person works in the worker\'s Session')
     this.slots.reserve(ticketId, 'launch')
     try { await this.launch(ticket, assignment); this.transient.delete(`launch:${assignmentId}`) }
     catch (error) {
@@ -224,6 +260,7 @@ export class ClaudeExecutor implements Executor {
     await this.stopped(ticketId)
     const first = this.current(ticketId)
     if (!first || !liveTicket(first) || !runningAssignment(first) || !first.undelivered.length) return
+    if (this.held(ticketId)) throw new Later('A person works in the worker\'s Session')
     let woken = false
     try {
       for (;;) {
@@ -256,6 +293,7 @@ export class ClaudeExecutor implements Executor {
       const current = this.current(ticket.id)
       if (!current || !liveTicket(current) || runningAssignment(current)?.id !== assignment.id) throw new Error('The ticket ended or another Assignment took it over')
       if (this.stopping.has(ticket.id)) throw new Later('The worker\'s background work is stopping')
+      if (this.held(ticket.id)) throw new Later('A person works in the worker\'s Session')
     }
     live()
     const card = input.kind === 'trigger' ? await this.triggerCard(ticket, input.triggerId, input.note) : undefined
@@ -436,7 +474,7 @@ export class ClaudeExecutor implements Executor {
       if (this.host.closing()) return
       const ticket = this.current(ticketId)
       if (!ticket || !liveTicket(ticket) || runningAssignment(ticket)?.id !== assignmentId) { this.resuming.delete(assignmentId); return }
-      if (this.host.paused()) { this.after(SLOT_WAIT_MS, go); return }
+      if (this.host.paused() || this.held(ticketId)) { this.after(SLOT_WAIT_MS, go); return }
       const waking = !this.running(ticket)
       try { if (waking) this.slots.reserve(ticketId, 'wake') } catch (failure) {
         if (!(failure instanceof Later)) throw failure
