@@ -367,6 +367,10 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
   'GET policy/history': { answer: () => server.history },
   'POST policy-sync/:id': { answer: ({ params }) => ({ policy: server.settings.policy.sources[params.id] }) },
   'POST setup/check': { answer: () => ({ restarting: true }) },
+  'PUT deployment': { body: true, answer: ({ body }) => {
+    server.setup = { ...server.setup, machine: { ...server.setup.machine, ...body } }
+    return server.setup.machine
+  } },
   // As the host lists them: one group, Claude Code's, the first model of which is the default.
   'GET models': { answer: () => ({ default: { provider: 'claude-code', model: 'default' }, failures: [],
     groups: [{ id: 'claude-code', name: 'Claude Code', models: [{ id: 'default', name: 'Default (recommended)' },

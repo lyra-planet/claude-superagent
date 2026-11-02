@@ -16,6 +16,8 @@ export type ThreadFilter = typeof THREAD_FILTERS[number]
 interface Paged { offset?: number; limit?: number }
 /** Whether a context update was already injected into the main Session or is still pending delivery. */
 type Delivery = 'injected' | 'pending'
+/** The machine limits the panel may change, which apply at their next use. */
+export interface MachineLimits { promptMaxChars: number; admissionContextMaxPages: number; admissionContextTimeoutMs: number }
 
 export interface Api {
   'GET state': { response: StateView }
@@ -39,6 +41,7 @@ export interface Api {
   'GET policy/history': { response: HistoryView }
   'POST policy-sync/:id': { response: { policy: unknown } }
   'POST setup/check': { response: { restarting: true } }
+  'PUT deployment': { body: MachineLimits; response: MachineLimits & { stateDir: string } }
   'GET models': { response: ModelCatalog }
   'GET prompts': { query?: { revision?: number; offset?: number }; response: PromptsView }
   'PUT prompts': { body: { config: PromptConfig; baseRevision: number }; response: { revision: number; context_delivery: Delivery } }

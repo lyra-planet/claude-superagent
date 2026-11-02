@@ -10,7 +10,7 @@ import { policyVersion } from '../policy.ts'
 import { SettingsConflict, type Settings } from './settings.ts'
 import { SetupError, type SetupProblem } from '../setup.ts'
 import { UserError, type EngineForPeople, type Ticket } from '../core/index.ts'
-import type { Deployment, Machine } from '../deployment.ts'
+import { MachineLimitsSchema, saveMachineLimits, type Deployment, type Machine } from '../deployment.ts'
 import type { Health } from '../sources/host.ts'
 import type { SourceRegistry } from '../sources/registry.ts'
 import type { Sessions } from './sessions.ts'
@@ -162,6 +162,8 @@ function routes(runtime: HttpHost): Routes {
   const promptBody = (input: { body: (maxBytes?: number) => Promise<unknown> }) => input.body(4 * runtime.machine.promptMaxChars.get() + 4096)
   return {
     'GET state': () => stateView(runtime),
+    // Upstream's DSH Plugin Manager saved these; here they live in config.json, which the next use reads.
+    'PUT deployment': async ({ body }) => { saveMachineLimits(runtime.machine.stateDir, MachineLimitsSchema.parse(await body())); return machineView(runtime.machine) },
     'GET overview': () => overview(views(runtime), runtime.health, policyVersion(store.settings()),
       executorLoad(store, runtime.executor.activeCount()), runtime.setupProblem ?? runtime.feishuProblem),
     'GET search': ({ query }) => search(views(runtime), query.q ?? '', runtime.sourceLinks),

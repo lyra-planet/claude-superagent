@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CREDENTIAL_NAME, GIT_LOCATION, agentVariables, credentialHelper, nodeSubprocess, runAsWorker, sandboxIgnore, verifyDirectory, withoutDirectory,
-  workerBin, workerGitConfig, workerGitVariables, writeEnvironment, type SubprocessRuntime } from '../src/infra/environment.ts'
+  workerBin, workerGitConfig, workerGitVariables, workerSessionEnvironment, writeEnvironment, type SubprocessRuntime } from '../src/infra/environment.ts'
 import { CliError } from '../src/infra/commands.ts'
 import { testDeployment } from './fixtures/deployment.ts'
 import { gitEnv } from './fixtures/git.ts'
@@ -234,4 +234,9 @@ describe('the host\'s subprocess runtime', () => {
   it('rejects a command that cannot start', async () => {
     await expect(nodeSubprocess.run([join(dir, 'missing')], { cwd: dir, signal: new AbortController().signal })).rejects.toThrow('ENOENT')
   })
+})
+
+it('keeps credential-shaped variables out of a worker Session but those Claude Code signs in with', () => {
+  expect(workerSessionEnvironment({ PATH: '/bin', GITHUB_TOKEN: 'a', DB_PASSWORD: 'b', MY_API_KEY: 'c', ANTHROPIC_API_KEY: 'd', CLAUDE_CODE_OAUTH_TOKEN: 'e',
+    AWS_SECRET_ACCESS_KEY: 'f', HTTPS_PROXY: 'g' })).toEqual({ PATH: '/bin', ANTHROPIC_API_KEY: 'd', CLAUDE_CODE_OAUTH_TOKEN: 'e', AWS_SECRET_ACCESS_KEY: 'f', HTTPS_PROXY: 'g' })
 })

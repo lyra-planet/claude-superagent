@@ -3,11 +3,11 @@
 import { act } from 'react'
 import { expect, it, onTestFinished, vi } from 'vitest'
 import { zh } from '../src/client/locales.ts'
-import { usePanel, mount, settle, all, find, tab, click, text, field, at } from './fixtures/panel.tsx'
+import { usePanel, mount, settle, all, find, tab, click, text, field, at, type } from './fixtures/panel.tsx'
 import { server, problemOf } from './fixtures/panel-server.ts'
 
 usePanel()
-it('shows this machine\'s settings in the Deployment settings read-only, where they are kept, and no accounts', async () => {
+it('shows this machine\'s settings in the Deployment settings, where they are kept, and no accounts, and saves its limits', async () => {
   await mount()
   await click(tab(zh['tab.settings']))
   await click(find(zh['settingsGroup.deployment'], '.dt-settings-link'))
@@ -16,13 +16,20 @@ it('shows this machine\'s settings in the Deployment settings read-only, where t
   expect(text()).not.toContain('@agent-bot')
   for (const moved of ['仓库克隆', '工单 worktree 目录', '禁用的命令']) expect(text()).not.toContain(moved)
   expect(text()).toContain(zh.deploymentIntro)
-  // The management API does not write config.json, so the limits show as the host read them, with where to change them.
   expect(text()).toContain(zh.deploymentReadOnly)
   for (const [label, value] of [[zh.deploymentPromptMaxChars, '100000'], [zh.deploymentContextPages, '10'], [zh.deploymentContextTimeout, '15000']]) {
-    expect(field<HTMLInputElement>(label!)).toMatchObject({ disabled: true, value })
+    expect(field<HTMLInputElement>(label!)).toMatchObject({ disabled: false, value })
   }
-  expect(all('button').some(button => button.textContent === zh.save)).toBe(false)
-  expect(document.querySelector('.dt-savebar')).toBeNull()
+  const save = () => all('button').find(button => button.textContent === zh.save) as HTMLButtonElement
+  expect(save().disabled).toBe(true)
+  // Adapted: upstream saved them through DSH's Plugin Manager; here the management API writes config.json.
+  await type(field<HTMLInputElement>(zh.deploymentContextPages), '20')
+  expect(save().disabled).toBe(false)
+  await click(zh.save)
+  expect(server.requests.find(request => request.path === 'deployment')).toMatchObject({ method: 'PUT',
+    body: { promptMaxChars: 100000, admissionContextMaxPages: 20, admissionContextTimeoutMs: 15000 } })
+  expect(field<HTMLInputElement>(zh.deploymentContextPages).value).toBe('20')
+  expect(save().disabled).toBe(true)
 })
 
 it('names a setup problem on the Deployment settings, beside the check that runs setup again', async () => {

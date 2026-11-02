@@ -1,6 +1,6 @@
 /** Plugin configuration and startup verification for repository access and agent CLI identities. */
 import { LIMITS } from './limits.ts'
-import { accessSync, constants, statSync } from 'node:fs'
+import { accessSync, constants, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { delimiter, isAbsolute, join } from 'node:path'
 import { z } from 'zod'
 import { runAsWorker, sameDirectory, withoutDirectory, workerBin, type SubprocessRuntime } from './infra/environment.ts'
@@ -9,7 +9,23 @@ import { SetupError } from './setup.ts'
 const reason = (error: unknown): string => error instanceof Error ? error.message : String(error)
 /** A machine setting read on each use, so a change applies without a restart. */
 export interface Volatile<T> { get(): T }
-const volatile = <T>(value: T): Volatile<T> => ({ get: () => value })
+/** Where a state directory keeps its machine configuration. */
+export const configFile = (stateDir: string): string => join(stateDir, 'config.json')
+/**
+ * A limit read from `config.json` on each use, again whenever the file changed, so a change applies without a restart; a file
+ * that does not parse keeps the last value read.
+ */
+function fromConfig<K extends keyof DeploymentConfig>(stateDir: string, key: K, value: DeploymentConfig[K]): Volatile<DeploymentConfig[K]> {
+  let seen = ''
+  return { get: () => {
+    try {
+      // A save replaces the file, so its inode changes even within the same millisecond.
+      const { ino, size, mtimeMs } = statSync(configFile(stateDir)), changed = `${ino}:${size}:${mtimeMs}`
+      if (changed !== seen) { value = ConfigSchema.parse(JSON.parse(readFileSync(configFile(stateDir), 'utf8')))[key]; seen = changed }
+    } catch { /* No file, or one that does not parse: the last value read stays. */ }
+    return value
+  } }
+}
 /**
  * The machine configuration in `<stateDir>/config.json`, beside the database: what upstream's DeepSeek Harness profile held. Everything
  * else (Sources, Policy, Execution, prompts) is a setting the panel and the management API save in the database.
@@ -40,8 +56,20 @@ export interface Machine {
 export function machineOf(stateDir: string, config: DeploymentConfig): Machine {
   if (!isAbsolute(stateDir)) throw new Error(`The state directory must be an absolute path: ${stateDir}`)
   const { port, allowedHosts, claudeConfigDir, promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs } = config
-  return { stateDir, port, allowedHosts, claudeConfigDir: claudeConfigDir || join(stateDir, 'claude'), promptMaxChars: volatile(promptMaxChars),
-    admissionContextMaxPages: volatile(admissionContextMaxPages), admissionContextTimeoutMs: volatile(admissionContextTimeoutMs) }
+  return { stateDir, port, allowedHosts, claudeConfigDir: claudeConfigDir || join(stateDir, 'claude'),
+    promptMaxChars: fromConfig(stateDir, 'promptMaxChars', promptMaxChars),
+    admissionContextMaxPages: fromConfig(stateDir, 'admissionContextMaxPages', admissionContextMaxPages),
+    admissionContextTimeoutMs: fromConfig(stateDir, 'admissionContextTimeoutMs', admissionContextTimeoutMs) }
+}
+/** The machine limits the panel may change; the other keys of `config.json` apply at a restart. */
+export const MachineLimitsSchema = ConfigSchema.pick({ promptMaxChars: true, admissionContextMaxPages: true, admissionContextTimeoutMs: true }).strict()
+/** Write machine limits into `config.json`, keeping its other keys; the limits apply at their next use. */
+export function saveMachineLimits(stateDir: string, limits: z.infer<typeof MachineLimitsSchema>): void {
+  const file = configFile(stateDir)
+  const current = ConfigSchema.parse(JSON.parse(readFileSync(file, 'utf8')))
+  const temporary = `${file}.${process.pid}.tmp`
+  writeFileSync(temporary, `${JSON.stringify({ ...current, ...MachineLimitsSchema.parse(limits) }, null, 2)}\n`, { mode: 0o600 })
+  renameSync(temporary, file)
 }
 
 export const GithubAccountsSchema = z.object({

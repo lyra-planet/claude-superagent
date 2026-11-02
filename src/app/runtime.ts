@@ -235,7 +235,12 @@ export class Runtime implements SourceHost {
     return { bash: false, env, sandbox: { enabled: true, failIfUnavailable: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false,
       ...mode === 'weak' ? { enableWeakerNestedSandbox: true } : {},
       network: { allowedDomains: [...GITHUB_DOMAINS, ...networkDomains] },
-      filesystem: { allowWrite: [this.machine.stateDir], denyRead: [join(this.machine.claudeConfigDir, '.credentials.json')] } } }
+      filesystem: { allowWrite: [this.machine.stateDir], denyRead: this.credentialPaths() } } }
+  }
+  /** Where Claude Code keeps the credentials it signs in with, which sandboxed Bash may not read. */
+  private credentialPaths(): string[] {
+    const store = process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR
+    return [join(this.machine.claudeConfigDir, '.credentials.json'), ...store ? [store] : []]
   }
   /** The models Claude Code lists for the credentials in use, read through a short query that sends no prompt. */
   private async models(): Promise<ModelCatalog> {

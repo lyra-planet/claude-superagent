@@ -1,10 +1,10 @@
 import { execFile } from 'node:child_process'
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ConfigSchema, executable, machineOf, resolveDeployment, resolveFeishuBot, type Machine, type Probe } from '../src/deployment.ts'
+import { ConfigSchema, executable, machineOf, resolveDeployment, resolveFeishuBot, saveMachineLimits, type Machine, type Probe } from '../src/deployment.ts'
 import { gitEnv } from './fixtures/git.ts'
 
 const exec = promisify(execFile)
@@ -101,5 +101,24 @@ describe('setup', () => {
     await refuses('feishuNoBot')
     program(join(dir, 'bin', 'lark-cli'), 'echo "not configured" >&2; exit 1')
     await refuses('feishuCliFailed', { output: expect.stringContaining('not configured') })
+  })
+})
+
+describe('machine limits', () => {
+  it('reads the limits from config.json again once it changed, so a change applies without a restart, and keeps the last good value', async () => {
+    const state = join(dir, 'state')
+    writeFileSync(join(state, 'config.json'), JSON.stringify({ port: 3090, admissionContextMaxPages: 12 }))
+    const read = machineOf(state, ConfigSchema.parse({ port: 3090, admissionContextMaxPages: 12 }))
+    expect(read.admissionContextMaxPages.get()).toBe(12)
+    saveMachineLimits(state, { promptMaxChars: 50000, admissionContextMaxPages: 20, admissionContextTimeoutMs: 15000 })
+    expect([read.promptMaxChars.get(), read.admissionContextMaxPages.get()]).toEqual([50000, 20])
+    // The other keys stay as they were.
+    expect(JSON.parse(readFileSync(join(state, 'config.json'), 'utf8'))).toMatchObject({ port: 3090, admissionContextMaxPages: 20 })
+    // A file that no longer parses keeps what was read; a refused limit is not written.
+    await new Promise(resolve => setTimeout(resolve, 20))
+    writeFileSync(join(state, 'config.json'), '{ broken')
+    expect(read.admissionContextMaxPages.get()).toBe(20)
+    writeFileSync(join(state, 'config.json'), JSON.stringify({ port: 3090 }))
+    expect(() => saveMachineLimits(state, { promptMaxChars: 1, admissionContextMaxPages: 20, admissionContextTimeoutMs: 15000 })).toThrow()
   })
 })

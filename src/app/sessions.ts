@@ -12,6 +12,7 @@ import { mandateInstructions, stableUuid, workerSessionId } from '../executor/co
 import type { HealthEntry } from '../infra/health.ts'
 import type { Logger } from '../infra/log.ts'
 import type { RoleModel } from '../policy.ts'
+import { workerSessionEnvironment } from '../infra/environment.ts'
 import { KV } from '../kv.ts'
 import type { Effects } from './effects.ts'
 import type { Variable } from './execution-environment.ts'
@@ -219,7 +220,7 @@ export class Sessions {
       systemPrompt: { type: 'preset', preset: 'claude_code', append: `[claude-superagent prompt revision ${version.revision}]\n${prompt}` },
       mcpServers: { [MCP_SERVER]: mcpServer(this.host.tools(current)) }, disallowedTools: WORKER_DENIED,
       allowedTools: bash ? [...WORKER_ALLOWED, 'Bash'] : WORKER_ALLOWED, permissionMode: 'dontAsk', ...sandbox,
-      hooks: this.host.hooks(current), plugins: [{ type: 'local', path: plugin }], settingSources: [], env: { ...this.host.environment(), ...env },
+      hooks: this.host.hooks(current), plugins: [{ type: 'local', path: plugin }], settingSources: [], env: { ...workerSessionEnvironment(this.host.environment()), ...env },
       stderr: line => { this.host.logger.warn('worker %s: %s', ticket.id.slice(0, 12), line.trimEnd()) },
     }
     return { options, fingerprint: key(JSON.stringify({ prompt, model, revision: version.revision })) }

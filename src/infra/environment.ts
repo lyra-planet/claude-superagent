@@ -155,6 +155,18 @@ export interface SubprocessRuntime {
 /** Environment variables a worker command never inherits: credential-shaped names, as upstream's DSH subprocess service strips them. */
 export const CREDENTIAL_NAME = /KEY|PASSWORD|SECRET|TOKEN/
 /**
+ * The credentials Claude Code itself signs in with, which a worker Session's process must keep although their names are
+ * credential-shaped; its Bash inherits them unless Claude Code scrubs its subprocesses (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`).
+ */
+export const CLAUDE_CREDENTIALS = new Set(['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_BEARER_TOKEN_BEDROCK', 'ANTHROPIC_FOUNDRY_API_KEY'])
+/**
+ * The environment of a worker Session's Claude Code process: `env` without credential-shaped variables, as upstream's worker
+ * commands never see them, but those Claude Code signs in with.
+ */
+export const workerSessionEnvironment = (env: Record<string, string | undefined>): Record<string, string | undefined> =>
+  Object.fromEntries(Object.entries(env).filter(([name]) => !CREDENTIAL_NAME.test(name) || CLAUDE_CREDENTIALS.has(name)))
+/**
  * Runs commands as child processes of the host, with the host's environment minus credential-shaped variables, plus `env`;
  * output beyond 1 MiB (stdout) or 64 KiB (stderr) is cut, and an abort sends SIGTERM, then SIGKILL after two seconds.
  */

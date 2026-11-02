@@ -559,7 +559,7 @@ const TEXT = {
   deploymentPromptMaxChars: ['提示词配置的最大字符数', 'Largest prompt configuration / characters'],
   deploymentContextPages: ['一次研判可读的线程页数', 'Thread pages one Assessment may read'],
   deploymentContextTimeout: ['一次上下文读取的时限 / 毫秒', 'Time limit of one context read / ms'],
-  deploymentReadOnly: ['这里只能查看：在 config.json 里修改，claude-superagent 重启后生效。', 'Shown read-only: change them in config.json; they apply once claude-superagent restarts.'],
+  deploymentReadOnly: ['端口、允许的 Host 和 Claude Code 配置目录在 config.json 里修改，claude-superagent 重启后生效；下面的上限在这里保存，下一次用到时就生效。', 'Change the port, the allowed Hosts and the Claude Code configuration directory in config.json; they apply once claude-superagent restarts. The limits below save here and apply at their next use.'],
   setupCheck: ['重新检查', 'Check again'],
   setupChecking: ['正在重新检查，claude-superagent 正在重启', 'Checking again; claude-superagent is restarting'],
   setupCheckInterrupts: ['重新检查会重启 claude-superagent：{count} 个进行中的派工会中断，并带恢复说明重新开始。', 'Checking again restarts claude-superagent: {count} running Assignments stop and start again with a recovery note.'],
