@@ -1,6 +1,14 @@
 /** One Claude Code Session, driven through the Agent SDK in streaming input mode. */
 import { getSessionInfo, getSessionMessages, query, type Options, type Query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 
+/** The Agent SDK calls a Session makes; tests pass a stand-in. */
+export interface Sdk {
+  query: typeof query
+  getSessionInfo: typeof getSessionInfo
+  getSessionMessages: typeof getSessionMessages
+}
+export const AGENT_SDK: Sdk = { query, getSessionInfo, getSessionMessages }
+
 /**
  * How a message reaches a Session (see docs/host-probes.md): `next` at the next step of a turn that runs, or as a new turn;
  * `later` after the turn that runs; `inject` into the history without starting a turn of its own.
@@ -53,7 +61,8 @@ export class ClaudeSession {
   /** The uuids of the messages this Session holds or was sent, read from its history once, then kept up to date. */
   private known?: Set<string>
   private idleWaiters: (() => void)[] = []
-  constructor(readonly id: string, readonly cwd: string, private readonly start: () => Promise<SessionStart>, private readonly events: SessionEvents = {}) {}
+  constructor(readonly id: string, readonly cwd: string, private readonly start: () => Promise<SessionStart>, private readonly events: SessionEvents = {},
+    private readonly sdk: Sdk = AGENT_SDK) {}
 
   /** Whether the query runs. */
   get open(): boolean { return this.running !== undefined }
@@ -68,9 +77,9 @@ export class ClaudeSession {
   async openSession(): Promise<void> {
     if (this.running) return
     const start = await this.start()
-    const exists = !!await getSessionInfo(this.id, { dir: this.cwd }).catch(() => undefined)
+    const exists = !!await this.sdk.getSessionInfo(this.id, { dir: this.cwd }).catch(() => undefined)
     const inbox = new Inbox()
-    const running = query({ prompt: inbox, options: { ...start.options, cwd: this.cwd, ...exists ? { resume: this.id } : { sessionId: this.id } } })
+    const running = this.sdk.query({ prompt: inbox, options: { ...start.options, cwd: this.cwd, ...exists ? { resume: this.id } : { sessionId: this.id } } })
     this.inbox = inbox; this.running = running; this.started = start; this.turn = false; this.tasks.clear()
     this.loop = this.consume(running)
   }
@@ -87,13 +96,13 @@ export class ClaudeSession {
     this.known.add(uuid)
     if (delivery !== 'inject') this.turn = true
   }
-  /** Whether this Session holds or was sent the message with `uuid`, as far as this process knows. */
+  /** Whether the Session's history holds the message with `uuid`: its Session took it into a step. */
   async took(uuid: string): Promise<boolean> {
     return (await this.history()).some(message => message.uuid === uuid)
   }
   /** The Session's messages, oldest first; none while it does not exist yet. */
   async history(): Promise<{ type: 'user' | 'assistant' | 'system'; uuid: string; message: unknown }[]> {
-    return getSessionMessages(this.id, { dir: this.cwd }).catch(() => [])
+    return this.sdk.getSessionMessages(this.id, { dir: this.cwd }).catch(() => [])
   }
   /** Cut the turn that runs short; the query goes on and takes later messages. */
   async interrupt(): Promise<void> { await this.running?.interrupt().catch(() => undefined) }

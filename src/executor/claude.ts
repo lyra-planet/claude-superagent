@@ -12,7 +12,7 @@ import type { Store } from '../app/store.ts'
 import { Later, type Effects } from '../app/effects.ts'
 import type { Variable } from '../app/execution-environment.ts'
 import { resultRelay } from '../app/notices.ts'
-import { ClaudeSession } from '../app/session.ts'
+import { AGENT_SDK, ClaudeSession, type Sdk } from '../app/session.ts'
 import type { Sessions } from '../app/sessions.ts'
 import { ASSIGNMENT_CHARS, BACKGROUND_LIMIT_MS, PREPARE_TIMEOUT_MS, PrepareFailed, RETRIED, SLOT_WAIT_MS, TRANSIENT_BACKOFF_MS, TRANSIENT_TRIES,
   WorkerSlots, batchLine, batchOf, capped, fromPerson, inputMessage, inputResource, sourceTrigger, ticketExecution, transient, triggerMessage,
@@ -38,6 +38,8 @@ export interface ExecutorHost {
   environment(ticket: Ticket): Variable[]
   sourceLink(trigger: import('../core/index.ts').Trigger, signal?: AbortSignal): Promise<{ source_url?: string; source_url_read?: string }>
   repliedTo(trigger: import('../core/index.ts').Trigger): import('../core/index.ts').Trigger | undefined
+  /** The Agent SDK the worker Sessions call; tests pass a stand-in. */
+  readonly sdk?: Sdk
 }
 
 /**
@@ -102,10 +104,9 @@ export class ClaudeExecutor implements Executor {
     if (!session) {
       session = new ClaudeSession(workerSessionId(ticket.id), ticket.execution?.directory ?? '', () => this.host.sessions.workerStart(this.current(ticket.id) ?? ticket),
         this.host.sessions.events(`worker ${ticket.id.slice(0, 12)}`, {
-          message: (_session, message) => { this.observe(ticket.id, message) },
           turnEnded: (_session, result, background) => { void this.background(this.turnEnded(ticket.id, result, background)) },
           ended: (_session, error) => { if (error) void this.background(this.sessionFailed(ticket.id, error)) },
-        }))
+        }), this.host.sdk ?? AGENT_SDK)
       this.workers.set(ticket.id, session)
     }
     return session
@@ -224,8 +225,6 @@ export class ClaudeExecutor implements Executor {
     return unread
   }
 
-  /** What a worker's messages say: a model retry is the Session's, a failed turn may be passing. */
-  private observe(_ticketId: string, _message: SDKMessage): void { /* Turn and task state live on the Session; retries on Sessions. */ }
   /**
    * A worker's turn ended. The Inputs its Session took count as read. A failed turn tries again when its failure is passing.
    * A worker that handed off to a person, or whose report says it waits, frees its slot; one with background tasks keeps it
