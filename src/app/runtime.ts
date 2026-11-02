@@ -1,5 +1,4 @@
 /** The composition root of claude-superagent: one process, one state directory, its Sessions, Sources and management server. */
-import { getSessionMessages, query } from '@anthropic-ai/claude-agent-sdk'
 import { mkdirSync } from 'node:fs'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { join } from 'node:path'
@@ -43,6 +42,8 @@ import { sourceContextOf, type SourceContextDeps } from './source-context.ts'
 import { Store } from './store.ts'
 import { executorTools, type ExecutorToolsHost } from './tools/executor.ts'
 import { mainTools, type MainToolsHost } from './tools/main.ts'
+import type { Tool } from './tools/tool.ts'
+import { AGENT_SDK, type Sdk } from './session.ts'
 import { evalsHealth } from './views/overview.ts'
 import type { LinkTarget } from './views/records.ts'
 
@@ -55,6 +56,12 @@ export interface RuntimeOptions {
   /** Serves the panel; without one, `/` answers with a short page pointing at the API. */
   panel?: Route
   subprocess?: SubprocessRuntime
+  /** The Agent SDK every Session calls; tests pass a stand-in. */
+  sdk?: Sdk
+  /** The Sources it runs, GitHub, Feishu and the terminal by default; tests pass them without their loops. */
+  plugins?: (local: SourcePlugin) => SourcePlugin[]
+  /** Whether it listens on its port; without, `handle` answers requests, as tests make them. */
+  listen?: boolean
 }
 const now = (): string => new Date().toISOString()
 /** The variables of a Claude Code session the host runs inside, which a Session it starts must not inherit. */
@@ -122,7 +129,7 @@ export class Runtime implements SourceHost {
         if (kind.policy?.sync) void this.ready.then(() => this.settings.syncable().includes(kind.kind) ? this.settings.sync(kind.kind) : undefined).catch(() => {})
         return () => {}
       })
-      this.plugins = [githubSource as SourcePlugin, feishuSource as SourcePlugin, this.local as SourcePlugin]
+      this.plugins = options.plugins?.(this.local as SourcePlugin) ?? [githubSource as SourcePlugin, feishuSource as SourcePlugin, this.local as SourcePlugin]
       for (const plugin of this.plugins) sources.register(plugin.kind)
       const links: LinkHost = { store, links: this.sourceLinks, commands, sources, lifetime: this.lifetime }
       const link = (trigger: Trigger, signal?: AbortSignal) => sourceLink(links, trigger, signal)
@@ -131,10 +138,10 @@ export class Runtime implements SourceHost {
         variables: ticket => setup.configured() ? (ticket ? this.ticketEnvironment(ticket) : deployed()) : undefined,
         tools: ticket => ticket ? executorTools(this.toolHost, ticket) : mainTools(this.toolHost, masterId),
         hooks: ticket => workerHooks(ticket.id, { ticket: id => store.tickets.get(id), blocked: () => store.settings().executor.blockedCommands }),
-        shell: () => this.shell() })
+        shell: () => this.shell(), sdk: this.sdk })
       mkdirSync(join(machine.stateDir, 'router'), { recursive: true })
       const resources: ResourceHost = { store, pages: new TextCache(4_000_000), prompts, commands, masterId,
-        transcript: sessionId => getSessionMessages(sessionId).then(messages => messages as SessionRecord[], () => []),
+        transcript: sessionId => this.sdk.getSessionMessages(sessionId).then(messages => messages as SessionRecord[], () => []),
         models: () => this.models(), promptVersion: id => sessions.promptVersion(id), mayRead: (id, revision) => sessions.mayRead(id, revision),
         feishuPageSize: () => feishuSettings(sources).readPageSize, sourceLink: link }
       const policyChanged: EngineForSettings['policyChanged'] = (from, to, effects) => { this.engine.policyChanged(from, to, effects) }
@@ -181,6 +188,13 @@ export class Runtime implements SourceHost {
     }
   }
   get health(): Readonly<Record<string, Health>> { return this.board.all }
+  private get sdk(): Sdk { return this.options.sdk ?? AGENT_SDK }
+  /** Resolves once the Passes and the effects that can run are done. */
+  idle(): Promise<void> { return this.passes.idle() }
+  /** Run a pass now. */
+  pump(): Promise<void> { return this.passes.pump() }
+  /** The tools of the router, or of a ticket's worker, as its Session gets them. */
+  toolsOf(ticket?: Ticket): Tool[] { return ticket ? executorTools(this.toolHost, ticket) : mainTools(this.toolHost, this.masterId) }
   /** Aborted when the Runtime stops or loses its state directory lock. */
   get lifetime(): AbortSignal { return this.stopped.signal }
   context(kind: { kind: string; health: readonly string[] }): SourceContext { return sourceContextOf(this.sourceDeps, kind) }
@@ -225,7 +239,7 @@ export class Runtime implements SourceHost {
   }
   /** The models Claude Code lists for the credentials in use, read through a short query that sends no prompt. */
   private async models(): Promise<ModelCatalog> {
-    const ask = query({ prompt: (async function* () { /* No message: only the control requests run. */ })(),
+    const ask = this.sdk.query({ prompt: (async function* () { /* No message: only the control requests run. */ })(),
       options: { settingSources: [], tools: [], env: this.claudeEnvironment(), cwd: join(this.machine.stateDir, 'router'), persistSession: false } })
     try { return catalogOf(await ask.supportedModels()) }
     catch (error) { return catalogOf(error instanceof Error ? error : new Error(String(error))) }
@@ -280,15 +294,16 @@ export class Runtime implements SourceHost {
       configured: () => setup.configured(), links: () => runtime.links(), ticketEnvironment: ticket => runtime.ticketEnvironment(ticket),
       checkSetup: () => { setup.check() }, requestPass: () => { passes.request() }, models: () => runtime.models() }
   }
-  /** The management server on the loopback port: the API, the terminal's routes, and the panel. */
+  /** Answer one request to the management server: the API, the terminal's routes, and the panel. */
+  handle: (req: IncomingMessage, res: ServerResponse) => Promise<void> = async () => { throw new Error('claude-superagent has not started') }
+  /** The management server on the loopback port. */
   private listen(): Promise<void> {
     const api = managementHandler(this.httpHost())
     const local = this.local.handler()
     const { port, allowedHosts, stateDir } = this.machine
     // A gateway forwards the browser's Host, which only the person running the service can name: say which one to allow.
     const refused = new Set<string>()
-    const server = this.server = createServer((req, res) => {
-      void (async () => {
+    this.handle = (req, res) => (async () => {
         const host = req.headers.host ?? ''
         if (!allowedHost(host, port, allowedHosts)) {
           if (!refused.has(host)) { refused.add(host); this.options.logger.warn('claude-superagent refused a request for Host "%s": if a gateway forwards the panel from there, add it to allowedHosts in %s and restart', host, join(stateDir, 'config.json')) }
@@ -306,7 +321,8 @@ export class Runtime implements SourceHost {
         res.writeHead(pathname === '/' ? 200 : 404, { 'content-type': 'text/plain; charset=utf-8' })
         res.end(pathname === '/' ? 'claude-superagent: the panel is not built; the management API is at orchestrator/api/state\n' : 'Not found\n')
       })().catch(error => { if (!res.headersSent) { res.writeHead(500); res.end(String(error)) } })
-    })
+    if (this.options.listen === false) return Promise.resolve()
+    const server = this.server = createServer((req, res) => { void this.handle(req, res) })
     return new Promise((resolve, reject) => {
       server.once('error', reject)
       server.listen(this.machine.port, '127.0.0.1', () => { server.off('error', reject); resolve() })
