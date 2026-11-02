@@ -4,7 +4,8 @@
  */
 import type { PromptVersion } from './app/prompts.ts'
 import type { SettingsVersion } from './app/store.ts'
-import type { SettingsSave } from './policy.ts'
+import type { RoleModel, SettingsSave } from './policy.ts'
+import type { QueuedMessage } from './app/session.ts'
 import type { Retry } from './sources/github.ts'
 import type { LocalMessage } from './sources/local.ts'
 
@@ -33,7 +34,11 @@ export const KV = {
   /** Runtime: the main Session's ID. */
   runtime: { masterId: record<string>('master-id') },
   /** Sessions: prompt revisions each Session has worked under, ordered oldest first; the last entry (`.at(-1)`) is its active revision. */
-  sessions: { prompts: family<number[], [session: string]>('session-prompts:') },
+  sessions: { prompts: family<number[], [session: string]>('session-prompts:'),
+    /** What a Session was handed and has not taken yet, oldest first, which it is handed again when its query next opens. */
+    inbox: family<QueuedMessage[], [session: string]>('session-inbox:'),
+    /** The model a Session was made with, which it keeps (null: Claude Code's default). */
+    model: family<RoleModel | null, [session: string]>('session-model:') },
   /** Schema 11 migration: legacy main-Session queues imported into the effect table. */
   queues: { relays: record<{ id: string; text: string }[]>('relay-queue'), unsubscribed: record<string[]>('subscription-results'),
     prompts: record<number | null>('prompt-notification'), settings: record<number | null>('settings-notification') },

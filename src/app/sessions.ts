@@ -4,7 +4,7 @@
  */
 import { createSdkMcpServer, tool as mcpTool, type HookCallbackMatcher, type HookEvent, type McpSdkServerConfigWithInstance, type Options,
   type SDKMessage } from '@anthropic-ai/claude-agent-sdk'
-import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { z } from 'zod'
 import { UserError, key, type Ticket } from '../core/index.ts'
@@ -17,7 +17,7 @@ import type { Effects } from './effects.ts'
 import type { Variable } from './execution-environment.ts'
 import { bundledSkills } from './skill-files.ts'
 import { SKILL_PREFIX, type PromptVersion, type Prompts } from './prompts.ts'
-import { ClaudeSession, type Delivery, type SessionEvents, type SessionStart } from './session.ts'
+import { ClaudeSession, type Delivery, type Sdk, type SessionEvents, type SessionLedger, type SessionStart } from './session.ts'
 import type { Store } from './store.ts'
 import type { Tool } from './tools/tool.ts'
 
@@ -31,12 +31,14 @@ export const PLUGIN = 'superagent'
  */
 export const WORKER_DENIED = ['AskUserQuestion', 'ExitPlanMode', 'EnterPlanMode', 'EnterWorktree', 'ExitWorktree', 'CronCreate', 'CronDelete',
   'CronList', 'RemoteTrigger', 'ScheduleWakeup', 'SendMessage', 'Workflow', 'Artifact', 'NotebookEdit']
+/** How many prompt revisions keep their skills directory on disk. */
+const KEPT_SKILL_REVISIONS = 5
 /** Tools a worker runs without a prompt; Bash is added when the sandbox is off, else the sandbox approves sandboxed commands. */
 export const WORKER_ALLOWED = [`mcp__${MCP_SERVER}__*`, 'Read', 'Edit', 'Write', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'TodoWrite', 'Agent', 'Skill']
 
 /** Host dependencies used by `Sessions`. */
 export interface SessionsHost {
-  readonly store: Pick<Store, 'settings' | 'get' | 'set' | 'keys' | 'tickets'>
+  readonly store: Pick<Store, 'settings' | 'get' | 'set' | 'delete' | 'keys' | 'tickets'>
   readonly prompts: Pick<Prompts, 'current' | 'version' | 'compose' | 'skills'>
   readonly effects: Pick<Effects, 'enqueue' | 'handle' | 'idle' | 'pending'>
   /** The `models` health entry: Sessions waiting on a model retry. */
@@ -56,6 +58,8 @@ export interface SessionsHost {
   hooks(ticket: Ticket): Partial<Record<HookEvent, HookCallbackMatcher[]>>
   /** How workers' Bash runs: the sandbox, whether Bash is approved outright, and the variables it adds to the environment. */
   shell(): Pick<Options, 'sandbox'> & { bash: boolean; env: Record<string, string> }
+  /** The Agent SDK the Sessions call; tests pass a stand-in. */
+  readonly sdk?: Sdk
 }
 
 /** A tool's result as MCP content: its value as JSON, and an image it carries as image content. */
@@ -93,25 +97,53 @@ function modelOptions(model: RoleModel | null): Pick<Options, 'model' | 'effort'
 }
 
 /**
- * Builds and runs the router's Session and builds every worker Session's start: prompts, tools, hooks, sandbox, skills and
- * environment. The router's relays and notices go through the durable `relay` and `notice` effects, in order, each at most
- * once per request id. Each start records the prompt revision it composed, so a worker may read the revisions it worked under.
+ * Builds and runs the router's Session and every worker's: what each starts with (prompts, tools, hooks, sandbox, skills,
+ * environment, model), and the ledger of what each was handed and has not taken. The router's relays and notices go through
+ * the durable `relay` and `notice` effects, in order, each at most once per request id. Each start records the prompt revision
+ * it composed, so a Session may read the revisions it worked under.
  */
 export class Sessions {
   readonly router: ClaudeSession
-  private readonly retries = new Map<string, { attempts: number; since: string; lastAt: string; status: number | null }>()
-  private skillsRevision?: number
+  private readonly workers = new Map<string, ClaudeSession>()
+  /** Sessions waiting on a model usage limit, by Session id. */
+  private readonly retries = new Map<string, { attempts: number; since: string; lastAt: string; status: number | null; error: string }>()
+  private readonly skillDirs = new Map<number, Promise<string>>()
   constructor(private readonly host: SessionsHost) {
-    this.router = new ClaudeSession(host.masterId, host.routerDirectory, () => this.routerStart(), this.events('router'))
+    this.router = new ClaudeSession(host.masterId, host.routerDirectory, () => this.routerStart(), this.events('router', {
+      // An idle router whose prompt or options changed starts again, so its next turn reads them.
+      idle: session => { void session.stale().then(stale => stale && !session.busy ? session.close() : undefined).catch(() => {}) },
+    }), host.sdk, this.ledger(host.masterId))
     host.effects.handle('relay', ({ text }, requestId) => this.toRouter(stableUuid('relay', requestId), text, 'next'), { ordered: true })
     host.effects.handle('notice', ({ value, summary }, name) =>
       this.toRouter(stableUuid('notice', name, key(JSON.stringify(value))), `Notice: ${summary}\n${JSON.stringify(value)}`, 'inject'), { ordered: true })
   }
-  /** Events every Session reports to Sessions: model retries for health, and failures for the log. */
-  events(label: string, more: SessionEvents = {}): SessionEvents {
-    return {
+  /**
+   * The worker Session of a ticket: the one made earlier, or with `ticket` and `events`, a new one whose start reads the ticket
+   * as it is then. Without them, undefined when none was made.
+   */
+  worker(ticketId: string): ClaudeSession | undefined
+  worker(ticketId: string, ticket: () => Ticket, events: SessionEvents): ClaudeSession
+  worker(ticketId: string, ticket?: () => Ticket, events?: SessionEvents): ClaudeSession | undefined {
+    let session = this.workers.get(ticketId)
+    if (!session && ticket && events) {
+      const id = workerSessionId(ticketId)
+      session = new ClaudeSession(id, ticket().execution?.directory ?? '', () => this.workerStart(ticket()), this.events(`worker ${ticketId.slice(0, 12)}`, events),
+        this.host.sdk, this.ledger(id))
+      this.workers.set(ticketId, session)
+    }
+    return session
+  }
+  /** A Session's ledger in the store, so what it was handed and did not take outlives the process. */
+  private ledger(sessionId: string): SessionLedger {
+    const name = KV.sessions.inbox(sessionId)
+    return { pending: () => this.host.store.get(name) ?? [],
+      save: pending => { if (pending.length) this.host.store.set(name, pending); else this.host.store.delete(name) } }
+  }
+  /** Events every Session reports to Sessions, around those of its owner: model retries for health, and failures for the log. */
+  private events(label: string, more: SessionEvents): SessionEvents {
+    return { ...more,
       message: (session, message) => { this.observe(session.id, message); more.message?.(session, message) },
-      turnEnded: (session, result, background) => { this.clearRetry(session.id); more.turnEnded?.(session, result, background) },
+      idle: (session, result) => { this.clearRetry(session.id); more.idle?.(session, result) },
       ended: (session, error) => {
         this.clearRetry(session.id)
         if (error) this.host.logger.warn('claude-superagent: the %s Session %s ended: %s', label, session.id, String(error))
@@ -120,14 +152,14 @@ export class Sessions {
     }
   }
   /** Deliver to the router once per uuid, restarting its Session first when it is idle and its prompt or options changed. */
-  private async toRouter(uuid: string, text: string, delivery: Delivery): Promise<void> {
+  private async toRouter(uuid: string, text: string, delivery: Delivery, authorize?: () => void): Promise<void> {
     if (this.router.open && !this.router.busy && await this.router.stale()) await this.router.close()
-    await this.router.send(uuid, text, delivery)
+    await this.router.send(uuid, text, delivery, authorize)
   }
-  /** Deliver `text` to a Session: the router, or a worker whose Session the Executor passes. */
-  async prompt(session: ClaudeSession, requestId: string, text: string, delivery: Delivery): Promise<void> {
-    if (session === this.router) return this.toRouter(stableUuid('prompt', requestId), text, delivery)
-    await session.send(this.promptedId(session.id, requestId), text, delivery)
+  /** Deliver `text` to a Session, the router or a worker, once per `requestId`; `authorize` runs last before it is handed over. */
+  async prompt(session: ClaudeSession, requestId: string, text: string, delivery: Delivery, authorize?: () => void): Promise<void> {
+    if (session === this.router) return this.toRouter(stableUuid('prompt', requestId), text, delivery, authorize)
+    await session.send(this.promptedId(session.id, requestId), text, delivery, authorize)
   }
   /** The uuid of the message `prompt` delivers to a Session under `requestId`, the same on every retry. */
   promptedId(sessionId: string, requestId: string): string { return stableUuid('prompt', sessionId, requestId) }
@@ -141,17 +173,33 @@ export class Sessions {
     return this.host.effects.pending('notice', name) ? 'pending' : 'injected'
   }
 
-  /** The router Session's start: its complete prompt, the host's tools only, no built-in tool, and no setting of the operator's. */
+  /**
+   * The model a Session works with: the role's model when the Session was made, kept for its life as upstream seeds a new
+   * Session only, so a change applies to Sessions made after it.
+   */
+  private sessionModel(sessionId: string, model: RoleModel | null): RoleModel | null {
+    const name = KV.sessions.model(sessionId), kept = this.host.store.get(name)
+    if (kept !== undefined) return kept
+    this.host.store.set(name, model)
+    return model
+  }
+  /**
+   * The router Session's start: its complete prompt, the host's tools, no built-in tool but Skill, which loads the team's
+   * skills, and no setting of the operator's.
+   */
   private async routerStart(): Promise<SessionStart> {
     const version = this.host.prompts.current(), settings = this.host.store.settings()
     const prompt = this.host.prompts.compose(version.config, 'orchestrator', this.host.variables())
+    const plugin = await this.skills(version)
     this.bind(this.host.masterId, version.revision)
+    const model = this.sessionModel(this.host.masterId, settings.eval.model)
     const options: SessionStart['options'] = {
-      ...modelOptions(settings.eval.model), systemPrompt: `[claude-superagent prompt revision ${version.revision}]\n${prompt}`,
-      tools: [], mcpServers: { [MCP_SERVER]: mcpServer(this.host.tools()) }, allowedTools: [`mcp__${MCP_SERVER}__*`], permissionMode: 'dontAsk',
-      settingSources: [], env: this.host.environment(), stderr: line => { this.host.logger.warn('router: %s', line.trimEnd()) },
+      ...modelOptions(model), systemPrompt: `[claude-superagent prompt revision ${version.revision}]\n${prompt}`,
+      tools: ['Skill'], mcpServers: { [MCP_SERVER]: mcpServer(this.host.tools()) }, allowedTools: [`mcp__${MCP_SERVER}__*`, 'Skill'],
+      permissionMode: 'dontAsk', plugins: [{ type: 'local', path: plugin }], settingSources: [], env: this.host.environment(),
+      stderr: line => { this.host.logger.warn('router: %s', line.trimEnd()) },
     }
-    return { options, fingerprint: key(JSON.stringify({ prompt, model: settings.eval.model })) }
+    return { options, fingerprint: key(JSON.stringify({ prompt, model, revision: version.revision })) }
   }
   /**
    * A worker Session's start: Claude Code's own prompt with the worker's appended, the host's worker tools beside the built-in
@@ -161,37 +209,52 @@ export class Sessions {
     const version = this.host.prompts.current(), settings = this.host.store.settings()
     const current = this.host.store.tickets.get(ticket.id) ?? ticket
     const prompt = `${this.host.prompts.compose(version.config, 'worker', this.host.variables(current))}\n${mandateInstructions(current.mandate)}`.trimEnd()
-    const plugin = await this.writeSkills(version)
-    this.bind(workerSessionId(ticket.id), version.revision)
+    const plugin = await this.skills(version)
+    const id = workerSessionId(ticket.id)
+    this.bind(id, version.revision)
+    const model = this.sessionModel(id, settings.executor.model)
     const { bash, env, ...sandbox } = this.host.shell()
     const options: SessionStart['options'] = {
-      ...modelOptions(settings.executor.model),
+      ...modelOptions(model),
       systemPrompt: { type: 'preset', preset: 'claude_code', append: `[claude-superagent prompt revision ${version.revision}]\n${prompt}` },
       mcpServers: { [MCP_SERVER]: mcpServer(this.host.tools(current)) }, disallowedTools: WORKER_DENIED,
       allowedTools: bash ? [...WORKER_ALLOWED, 'Bash'] : WORKER_ALLOWED, permissionMode: 'dontAsk', ...sandbox,
       hooks: this.host.hooks(current), plugins: [{ type: 'local', path: plugin }], settingSources: [], env: { ...this.host.environment(), ...env },
       stderr: line => { this.host.logger.warn('worker %s: %s', ticket.id.slice(0, 12), line.trimEnd()) },
     }
-    return { options, fingerprint: key(JSON.stringify({ prompt, model: settings.executor.model, revision: version.revision })) }
+    return { options, fingerprint: key(JSON.stringify({ prompt, model, revision: version.revision })) }
   }
   /**
-   * Write the skills of a prompt version as a Claude Code plugin under the state directory, once per revision: the built-in
-   * Source skills and the team's, each a `skills/<name>/SKILL.md`. Workers load it, so the GitHub skill reads as `superagent:github`.
+   * The skills of a prompt version as a Claude Code plugin under the state directory, one directory per revision, so a
+   * Session started under an earlier revision keeps reading its own: the built-in Source skills and the team's, each a
+   * `skills/<name>/SKILL.md`, which a Session loads as `superagent:<name>`. The latest few revisions stay on disk.
    */
+  private skills(version: PromptVersion): Promise<string> {
+    let dir = this.skillDirs.get(version.revision)
+    if (!dir) {
+      dir = this.writeSkills(version)
+      this.skillDirs.set(version.revision, dir)
+      dir.catch(() => { this.skillDirs.delete(version.revision) })
+    }
+    return dir
+  }
   private async writeSkills(version: PromptVersion): Promise<string> {
-    const root = join(this.host.stateDir, 'plugin')
-    if (this.skillsRevision === version.revision) return root
-    await rm(join(root, 'skills'), { recursive: true, force: true })
+    const base = join(this.host.stateDir, 'plugin'), root = join(base, `r${version.revision}`)
+    await rm(root, { recursive: true, force: true })
     await mkdir(join(root, '.claude-plugin'), { recursive: true })
     await writeFile(join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: PLUGIN, version: '1.0.0',
-      description: 'Skills claude-superagent gives its workers' }, null, 2))
+      description: 'Skills claude-superagent gives its Sessions' }, null, 2))
     for (const [name, content] of this.host.prompts.skills(version.config)) {
       const bundled = name === 'feishu' || name === 'github' ? bundledSkills[name] : undefined
       const description = bundled?.description ?? (content.replace(/\s+/g, ' ').slice(0, 200) || 'A claude-superagent team skill.')
       await mkdir(join(root, 'skills', name), { recursive: true })
       await writeFile(join(root, 'skills', name, 'SKILL.md'), `---\nname: ${name}\ndescription: ${JSON.stringify(description)}\n---\n\n${content}\n`)
     }
-    this.skillsRevision = version.revision
+    // Revisions older than the latest few go: a Session still started under one starts again under the current revision.
+    const kept = (await readdir(base).catch(() => [] as string[])).flatMap(entry => /^r\d+$/.test(entry) ? [Number(entry.slice(1))] : [])
+    for (const revision of kept.sort((a, b) => b - a).slice(KEPT_SKILL_REVISIONS)) {
+      if (revision !== version.revision) await rm(join(base, `r${revision}`), { recursive: true, force: true })
+    }
     return root
   }
 
@@ -218,24 +281,33 @@ export class Sessions {
   mayRead(sessionId: string, revision: number): boolean {
     return revision === this.promptVersion(sessionId).revision || (this.host.store.get(KV.sessions.prompts(sessionId)) ?? []).includes(revision)
   }
-  /** A Session's model retry, for its ticket's card while it waits on one. */
+  /** A Session's wait on a model usage limit, for its ticket's card while it waits. */
   modelRetry(sessionId: string | undefined) {
     const retry = sessionId ? this.retries.get(sessionId) : undefined
-    return retry ? { model_retry: { attempts: retry.attempts, since: retry.since, status: retry.status } } : {}
+    return retry ? { model_retry: { attempts: retry.attempts, since: retry.since, status: retry.status, error: retry.error } } : {}
   }
+  /**
+   * Follow a Session's model retries: one for a usage limit or billing (`rate_limit`, `billing_error`) is a wait on the model's
+   * budget, as upstream's budget retries; passing failures (overloaded, server errors, a dropped connection) are not. A step
+   * that answers ends the wait.
+   */
   private observe(sessionId: string, message: SDKMessage): void {
-    const m = message as { type: string; subtype?: string; attempt?: number; error_status?: number | null }
+    const m = message as { type: string; subtype?: string; attempt?: number; error_status?: number | null; error?: string }
+    if (m.type === 'assistant') { this.clearRetry(sessionId); return }
     if (m.type !== 'system' || m.subtype !== 'api_retry') return
+    if (m.error !== 'rate_limit' && m.error !== 'billing_error') { this.clearRetry(sessionId); return }
     const now = new Date().toISOString(), before = this.retries.get(sessionId)
-    this.retries.set(sessionId, { attempts: m.attempt ?? (before?.attempts ?? 0) + 1, since: before?.since ?? now, lastAt: now, status: m.error_status ?? null })
+    this.retries.set(sessionId, { attempts: m.attempt ?? (before?.attempts ?? 0) + 1, since: before?.since ?? now, lastAt: now,
+      status: m.error_status ?? null, error: m.error })
     this.updateHealth()
   }
   private clearRetry(sessionId: string): void { if (this.retries.delete(sessionId)) this.updateHealth() }
   private updateHealth(): void {
-    const waiting = [...this.retries].map(([sessionId, retry]) => `${sessionId}: retried ${retry.attempts} times since ${retry.since}${retry.status ? ` (HTTP ${retry.status})` : ''}`)
-    this.host.health.set(waiting.length ? { state: 'error', detail: waiting.slice(0, 5).join('; '), at: new Date().toISOString() }
-      : { state: 'ready', detail: 'No Session is waiting on a model retry' })
+    const waiting = [...this.retries].map(([sessionId, retry]) =>
+      `${sessionId}: waits on the model's usage limit (${retry.error}${retry.status ? `, HTTP ${retry.status}` : ''}); retried ${retry.attempts} times since ${retry.since}`)
+    this.host.health.set(waiting.length ? { state: 'error', detail: waiting.slice(0, 5).join('; ') + (waiting.length > 5 ? `; ${waiting.length - 5} more Sessions` : ''),
+      at: new Date().toISOString() } : { state: 'ready', detail: 'No Session is waiting on a model usage limit' })
   }
-  /** End the router's query; queued relays and notices stay in the effect queue. */
-  async dispose(): Promise<void> { await this.router.close() }
+  /** End every Session's query; what they were handed and did not take stays in their ledgers. */
+  async dispose(): Promise<void> { await Promise.allSettled([this.router.close(), ...[...this.workers.values()].map(session => session.close())]) }
 }

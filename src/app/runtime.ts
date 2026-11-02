@@ -320,7 +320,13 @@ export class Runtime implements SourceHost {
     this.stopped.abort()
     try {
       this.assessor.stop()
-      await Promise.allSettled([passes, this.effects.drain(), this.sessions.dispose(), this.executor.shutdown(), ...this.loops])
+      // Every turn stops first, keeping what its Session was handed and did not take in its ledger, as upstream cancels its
+      // agents keeping their inboxes; then the effects drain, the workers' background work stops, and the queries end.
+      const sessions = [this.sessions.router, ...this.store.tickets.list().flatMap(ticket => this.sessions.worker(ticket.id) ?? [])]
+      await Promise.allSettled(sessions.filter(session => session.working).map(session => session.interrupt()))
+      await Promise.allSettled([passes, this.effects.drain(), ...this.loops])
+      await this.executor.shutdown()
+      await this.sessions.dispose()
       await new Promise<void>(resolve => { if (this.server) this.server.close(() => resolve()); else resolve() })
     } finally {
       this.setup.restore()
