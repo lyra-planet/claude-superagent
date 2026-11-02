@@ -20,6 +20,8 @@ import { ASSIGNMENT_CHARS, BACKGROUND_LIMIT_MS, PREPARE_TIMEOUT_MS, PrepareFaile
   triggerMessage } from './common.ts'
 
 const now = (): string => new Date().toISOString()
+/** How long a stop of a worker's subagents may take before the host goes on, as upstream bounds a release of them. */
+const SUBAGENT_STOP_MS = 10_000
 /** A background task by its id and the first line of what it runs, as upstream names a job. */
 const named = (task: { id: string; description: string }) => { const line = task.description.split('\n')[0]?.trim(); return line ? `${task.id} (${line})` : task.id }
 /** `work`, or false once `signal` aborts or `ms` pass first. */
@@ -420,7 +422,7 @@ export class ClaudeExecutor implements Executor {
     this.left.set(ticketId, left)
     for (const task of session.background) if (!subagent(task)) left.add(task.id)
     // A delivery waits for the subagents' stop, as for any stop of the worker's background work.
-    const stop = Promise.all(session.background.filter(subagent).map(task => session.stopTask(task.id))).then(() => {})
+    const stop = until(Promise.all(session.background.filter(subagent).map(task => session.stopTask(task.id))), undefined, SUBAGENT_STOP_MS).then(() => {})
     this.track(ticketId, stop)
     await stop
     if (!session.background.some(task => !subagent(task)) && !session.working) await session.close()

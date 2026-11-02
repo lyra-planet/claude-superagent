@@ -132,20 +132,22 @@ export function fakeClaude() {
   const sessions = new Map<string, FakeSession>()
   const queries: FakeQuery[] = []
   const pushed = vi.fn<(message: Pushed) => void>()
+  /** The models Claude Code lists for the credentials in use; a test may change them. */
+  const models = ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'worker-model', 'router-model', 'eval-model', 'm', 'm1', 'm2']
   const session = (id: string): FakeSession => { let found = sessions.get(id); if (!found) { found = new FakeSession(id); sessions.set(id, found) } return found }
   const sdk = {
     query: vi.fn(({ prompt, options }: { prompt: AsyncIterable<SDKUserMessage>; options: Record<string, any> }) => {
       const target = session(options.resume ?? options.sessionId ?? 'models')
       const query = new FakeQuery(target, options, prompt, message => { pushed(message) })
       // A query that lists models only answers its control request.
-      Object.assign(query, { supportedModels: async () => [{ value: 'claude-opus-5-5', displayName: 'Opus', description: '' }] })
+      Object.assign(query, { supportedModels: async () => models.map(value => ({ value, displayName: value, description: '' })) })
       if (options.resume || options.sessionId) { target.query = query; queries.push(query) }
       return query as unknown as ReturnType<Sdk['query']>
     }),
     getSessionInfo: vi.fn(async (id: string) => sessions.get(id)?.history.length || sessions.get(id)?.query ? { sessionId: id } : undefined),
     getSessionMessages: vi.fn(async (id: string) => [...sessions.get(id)?.history ?? []]),
   } as unknown as Sdk & { query: ReturnType<typeof vi.fn> }
-  return { sdk, sessions, queries, pushed, session,
+  return { sdk, sessions, queries, pushed, session, models,
     /** What the host pushed to `sessionId`, in order. */
     to: (sessionId: string) => pushed.mock.calls.map(([message]) => message).filter(message => message.sessionId === sessionId) }
 }

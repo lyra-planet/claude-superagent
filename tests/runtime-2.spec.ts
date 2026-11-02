@@ -570,7 +570,7 @@ it('refuses a settings save with an unknown model or a Source kind that is not i
   // Adapted: a model is checked against the models Claude Code lists, where upstream asked DSH's LLM registry to resolve it.
   const evalBlock = { ...runtime.store.settings().eval, model: { provider: 'nowhere', model: 'x' } }
   expect(await api('PUT', 'settings/eval', { value: evalBlock, revision: runtime.store.blockRevision('eval') }))
-    .toMatchObject({ status: 400, body: { code: 'modelUnavailable', values: { block: 'eval', error: 'Claude Code lists no model x: claude-opus-5-5' } } })
+    .toMatchObject({ status: 400, body: { code: 'modelUnavailable', values: { block: 'eval', error: expect.stringMatching(/^Claude Code lists no model x: claude-opus-5-5, /) } } })
   const stored = runtime.store.settings()
   runtime.store.saveSettings({ ...stored, sources: { ...stored.sources, slack: { enabled: false, config: {} } } })
   expect(await api('PUT', 'settings/source:slack', { value: { enabled: true, config: {} }, revision: 0 }))

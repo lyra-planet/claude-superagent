@@ -103,6 +103,9 @@ export class ClaudeSession {
    * runs; read again once it ended, as the Session on disk may have changed or gone meanwhile.
    */
   private taken?: Set<string>
+  /** A read of the history that runs, which replays meanwhile join (`tookMeanwhile`). */
+  private loading?: Promise<Set<string>>
+  private readonly tookMeanwhile = new Set<string>()
   private idleWaiters: (() => void)[] = []
   constructor(readonly id: string, readonly cwd: string, private readonly start: () => Promise<SessionStart>, private readonly events: SessionEvents = {},
     private readonly sdk: Sdk = AGENT_SDK, private readonly ledger: SessionLedger = memoryLedger()) {}
@@ -215,9 +218,24 @@ export class ClaudeSession {
     this.queued.add(message.uuid)
     if (message.delivery !== 'inject') this.querying.add(message.uuid)
   }
-  private async takenSet(): Promise<Set<string>> {
-    this.taken ??= new Set((await this.history()).map(message => message.uuid))
-    return this.taken
+  /**
+   * What the Session took. A history that cannot be read fails the send, which its effect tries again, unless the Session does
+   * not exist yet; replays that come while it is read join it.
+   */
+  private takenSet(): Promise<Set<string>> {
+    if (this.taken) return Promise.resolve(this.taken)
+    return this.loading ??= (async () => {
+      let history: { uuid: string }[]
+      try { history = await this.sdk.getSessionMessages(this.id, { dir: this.cwd }) }
+      catch (error) {
+        if (await this.sdk.getSessionInfo(this.id, { dir: this.cwd }).catch(() => undefined)) throw error
+        history = []
+      }
+      const taken = new Set([...history.map(message => message.uuid), ...this.tookMeanwhile])
+      this.tookMeanwhile.clear()
+      this.taken = taken
+      return taken
+    })().finally(() => { this.loading = undefined })
   }
   private async consume(running: Query): Promise<void> {
     let failure: unknown
@@ -250,7 +268,8 @@ export class ClaudeSession {
       tasks?: { task_id: string; task_type: string; description: string; ambient?: boolean }[] }
     if (m.type === 'result') { this.lastResult = message as SDKResultMessage; return undefined }
     if (m.type === 'user' && m.isReplay && m.uuid && this.queued.has(m.uuid)) {
-      this.queued.delete(m.uuid); this.querying.delete(m.uuid); this.taken?.add(m.uuid)
+      this.queued.delete(m.uuid); this.querying.delete(m.uuid)
+      if (this.taken) this.taken.add(m.uuid); else this.tookMeanwhile.add(m.uuid)
       this.forget([m.uuid])
       return { took: m.uuid }
     }

@@ -18,7 +18,8 @@ import type { Effects } from './effects.ts'
 import type { Variable } from './execution-environment.ts'
 import { bundledSkills } from './skill-files.ts'
 import { SKILL_PREFIX, type PromptVersion, type Prompts } from './prompts.ts'
-import { ClaudeSession, type Delivery, type Sdk, type SessionEvents, type SessionLedger, type SessionStart } from './session.ts'
+import { AGENT_SDK, ClaudeSession, type Delivery, type Sdk, type SessionEvents, type SessionLedger, type SessionStart } from './session.ts'
+import { PROVIDER } from './models.ts'
 import type { Store } from './store.ts'
 import type { Tool } from './tools/tool.ts'
 
@@ -61,6 +62,8 @@ export interface SessionsHost {
   shell(): Pick<Options, 'sandbox'> & { bash: boolean; env: Record<string, string> }
   /** The Agent SDK the Sessions call; tests pass a stand-in. */
   readonly sdk?: Sdk
+  /** Throws when Claude Code does not list `model` for the credentials in use. */
+  checkModel?(model: RoleModel): Promise<void>
   /** Every message a Session's query yields, for the terminal's view of what Sessions do. */
   activity?(sessionId: string, message: SDKMessage): void
 }
@@ -110,7 +113,7 @@ export class Sessions {
   private readonly workers = new Map<string, ClaudeSession>()
   /** The ticket of each worker Session made, by Session id. */
   private readonly tickets = new Map<string, string>()
-  /** Sessions waiting on a model usage limit, by Session id. */
+  /** Sessions waiting on a model's budget, by Session id. */
   private readonly retries = new Map<string, { attempts: number; since: string; lastAt: string; status: number | null; error: string }>()
   private readonly skillDirs = new Map<number, Promise<string>>()
   constructor(private readonly host: SessionsHost) {
@@ -181,12 +184,22 @@ export class Sessions {
   }
 
   /**
-   * The model a Session works with: the role's model when the Session was made, kept for its life as upstream seeds a new
-   * Session only, so a change applies to Sessions made after it.
+   * The model a Session works with, as upstream seeds a new Session only: the role's model when the Session was made, which a
+   * model Claude Code does not list fails before it is recorded; a Session made before the host recorded models keeps the one
+   * its history last used. A change applies to Sessions made after it.
    */
-  private sessionModel(sessionId: string, model: RoleModel | null): RoleModel | null {
+  private async sessionModel(sessionId: string, cwd: string, model: RoleModel | null): Promise<RoleModel | null> {
     const name = KV.sessions.model(sessionId), kept = this.host.store.get(name)
     if (kept !== undefined) return kept
+    const sdk = this.host.sdk ?? AGENT_SDK
+    if (await sdk.getSessionInfo(sessionId, { dir: cwd }).catch(() => undefined)) {
+      const used = (await sdk.getSessionMessages(sessionId, { dir: cwd }).catch(() => [])).flatMap(message =>
+        message.type === 'assistant' && typeof (message.message as { model?: unknown })?.model === 'string' ? [(message.message as { model: string }).model] : []).at(-1)
+      const resumed = used ? { provider: PROVIDER, model: used } : null
+      this.host.store.set(name, resumed)
+      return resumed
+    }
+    if (model) await this.host.checkModel?.(model)
     this.host.store.set(name, model)
     return model
   }
@@ -199,7 +212,7 @@ export class Sessions {
     const prompt = this.host.prompts.compose(version.config, 'orchestrator', this.host.variables())
     const plugin = await this.skills(version)
     this.bind(this.host.masterId, version.revision)
-    const model = this.sessionModel(this.host.masterId, settings.eval.model)
+    const model = await this.sessionModel(this.host.masterId, this.host.routerDirectory, settings.eval.model)
     const options: SessionStart['options'] = {
       ...modelOptions(model), systemPrompt: `[claude-superagent prompt revision ${version.revision}]\n${prompt}`,
       tools: ['Skill'], mcpServers: { [MCP_SERVER]: mcpServer(this.host.tools()) }, allowedTools: [`mcp__${MCP_SERVER}__*`, 'Skill'],
@@ -219,7 +232,7 @@ export class Sessions {
     const plugin = await this.skills(version)
     const id = workerSessionId(ticket.id)
     this.bind(id, version.revision)
-    const model = this.sessionModel(id, settings.executor.model)
+    const model = await this.sessionModel(id, current.execution?.directory ?? '', settings.executor.model)
     const { bash, env, ...sandbox } = this.host.shell()
     const options: SessionStart['options'] = {
       ...modelOptions(model),
@@ -294,26 +307,29 @@ export class Sessions {
     return retry ? { model_retry: { attempts: retry.attempts, since: retry.since, status: retry.status, error: retry.error } } : {}
   }
   /**
-   * Follow a Session's model retries: one for a usage limit or billing (`rate_limit`, `billing_error`) is a wait on the model's
-   * budget, as upstream's budget retries; passing failures (overloaded, server errors, a dropped connection) are not. A step
-   * that answers ends the wait.
+   * Follow a Session's model retries, as upstream follows its budget retries: a retry for billing (`billing_error`, the account
+   * out of credit) is a wait on the model's budget; a passing failure is not, a rate limit (HTTP 429, which Claude Code also
+   * reports for a passing throttle) included. A step that answers, or a turn that ends, ends the wait; an attempt count that is
+   * not a whole number from 1 is no retry.
    */
   private observe(sessionId: string, message: SDKMessage): void {
-    const m = message as { type: string; subtype?: string; attempt?: number; error_status?: number | null; error?: string }
-    if (m.type === 'assistant') { this.clearRetry(sessionId); return }
+    const m = message as { type: string; subtype?: string; attempt?: unknown; error_status?: number | null; error?: string }
+    if (m.type === 'assistant' || m.type === 'result') { this.clearRetry(sessionId); return }
     if (m.type !== 'system' || m.subtype !== 'api_retry') return
-    if (m.error !== 'rate_limit' && m.error !== 'billing_error') { this.clearRetry(sessionId); return }
+    if (m.error !== 'billing_error') { this.clearRetry(sessionId); return }
+    if (typeof m.attempt !== 'number' || !Number.isInteger(m.attempt) || m.attempt < 1) return
     const now = new Date().toISOString(), before = this.retries.get(sessionId)
-    this.retries.set(sessionId, { attempts: m.attempt ?? (before?.attempts ?? 0) + 1, since: before?.since ?? now, lastAt: now,
-      status: m.error_status ?? null, error: m.error })
+    const attempts = Math.min(m.attempt, Number.MAX_SAFE_INTEGER)
+    if (before && attempts <= before.attempts) return
+    this.retries.set(sessionId, { attempts, since: before?.since ?? now, lastAt: now, status: typeof m.error_status === 'number' ? m.error_status : null, error: m.error })
     this.updateHealth()
   }
   private clearRetry(sessionId: string): void { if (this.retries.delete(sessionId)) this.updateHealth() }
   private updateHealth(): void {
     const waiting = [...this.retries].map(([sessionId, retry]) =>
-      `${sessionId}: waits on the model's usage limit (${retry.error}${retry.status ? `, HTTP ${retry.status}` : ''}); retried ${retry.attempts} times since ${retry.since}`)
+      `${sessionId}: waits on the model's budget (${retry.error}${retry.status ? `, HTTP ${retry.status}` : ''}); retried ${retry.attempts} times since ${retry.since}; the model and retry policy are unchanged`)
     this.host.health.set(waiting.length ? { state: 'error', detail: waiting.slice(0, 5).join('; ') + (waiting.length > 5 ? `; ${waiting.length - 5} more Sessions` : ''),
-      at: new Date().toISOString() } : { state: 'ready', detail: 'No Session is waiting on a model usage limit' })
+      at: new Date().toISOString() } : { state: 'ready', detail: 'No Session is waiting on a model budget' })
   }
   /** End every Session's query; what they were handed and did not take stays in their ledgers. */
   async dispose(): Promise<void> { await Promise.allSettled([this.router.close(), ...[...this.workers.values()].map(session => session.close())]) }

@@ -155,7 +155,7 @@ export class Runtime implements SourceHost {
         variables: ticket => setup.configured() ? (ticket ? this.ticketEnvironment(ticket) : deployed()) : undefined,
         tools: ticket => ticket ? executorTools(this.toolHost, ticket) : mainTools(this.toolHost, masterId),
         hooks: ticket => workerHooks(ticket.id, { ticket: id => store.tickets.get(id), blocked: () => store.settings().executor.blockedCommands }),
-        shell: () => this.shell(), sdk: this.sdk, activity: (sessionId, message) => {
+        shell: () => this.shell(), sdk: this.sdk, checkModel: model => this.checkModel(model), activity: (sessionId, message) => {
           const lines = activityOf(message)
           if (lines.length) this.bus.emit('event', { type: 'activity', ...this.sessions.ticketOf(sessionId) ? { ticketId: this.sessions.ticketOf(sessionId) } : {}, lines })
         } })

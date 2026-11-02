@@ -39,7 +39,7 @@ export function ownPidFile(stateDir: string): () => void {
 }
 /** The newest log, if any. */
 export function latestLog(stateDir: string): string | undefined {
-  const logs = existsSync(logsDir(stateDir)) ? readdirSync(logsDir(stateDir)).filter(name => name.endsWith('.log')).sort() : []
+  const logs = existsSync(logsDir(stateDir)) ? readdirSync(logsDir(stateDir)).filter(name => /^service-.*\.log$/.test(name)).sort() : []
   return logs.length ? join(logsDir(stateDir), logs.at(-1)!) : undefined
 }
 /**
@@ -48,7 +48,8 @@ export function latestLog(stateDir: string): string | undefined {
  */
 export async function startDetached(stateDir: string, argv: string[], ready: () => Promise<boolean>, waitMs = 60_000): Promise<{ pid: number; log: string }> {
   mkdirSync(logsDir(stateDir), { recursive: true })
-  const logs = readdirSync(logsDir(stateDir)).filter(name => name.endsWith('.log')).sort()
+  // Only the service's own logs go; anything else a person keeps there stays.
+  const logs = readdirSync(logsDir(stateDir)).filter(name => /^service-.*\.log$/.test(name)).sort()
   for (const old of logs.slice(0, Math.max(0, logs.length - KEPT_LOGS + 1))) rmSync(join(logsDir(stateDir), old), { force: true })
   const log = join(logsDir(stateDir), `service-${new Date().toISOString().replace(/[:.]/g, '-')}.log`)
   const out = openSync(log, 'a')

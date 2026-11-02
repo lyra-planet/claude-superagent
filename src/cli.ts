@@ -136,18 +136,19 @@ async function stop(mark = true): Promise<boolean> {
 async function status(): Promise<number> {
   const state = await service().call('GET', '/orchestrator/api/state').catch(() => undefined)
   if (!state || state.status !== 200) { say(`claude-superagent is not running${stoppedByPerson(stateDir) ? ' (a person stopped it)' : ''}`); return 1 }
-  const { setup, health, load, paused } = state.body
-  const errors = Object.entries(health as Record<string, { state: string; detail: string }>).filter(([, entry]) => entry.state === 'error')
-  say(JSON.stringify({ pid: runningPid(stateDir) ?? null, setup: setup.problem, accounts: setup.accounts, paused, load,
+  const { setup, health = {}, load, paused } = state.body as { setup?: { problem?: unknown; accounts?: unknown }; health?: Record<string, { state?: string; detail?: string }>
+    load?: unknown; paused?: boolean }
+  const errors = Object.entries(health).filter(([, entry]) => entry?.state === 'error')
+  say(JSON.stringify({ pid: runningPid(stateDir) ?? null, setup: setup?.problem ?? null, accounts: setup?.accounts ?? null, paused, load,
     errors: Object.fromEntries(errors.map(([name, entry]) => [name, entry.detail])) }, null, 2))
   if (health.runtime?.state === 'error') return 1
-  if (setup.problem) return 3
+  if (setup?.problem) return 3
   return errors.length ? 2 : 0
 }
 /** For cron, as upstream's hourly check: start the service unless it runs, or unless a person stopped it and `--respect-stop`. */
 async function check(): Promise<number> {
   if (await service().running()) return status()
-  if (flags['respect-stop'] && stoppedByPerson(stateDir)) { say('claude-superagent is stopped by a person; leaving it stopped'); return 1 }
+  if (flags['respect-stop'] && stoppedByPerson(stateDir)) { say('claude-superagent is stopped by a person; leaving it stopped'); return 0 }
   flags.detach = true
   await start()
   return status()
