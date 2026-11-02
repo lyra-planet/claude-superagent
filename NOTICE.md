@@ -8,10 +8,15 @@ Source: https://github.com/deepseek-ai/dsh-superagent-prototype, commit `6337fc8
 
 | Files here | Status |
 |---|---|
-| `src/core/*.ts` | Copied unchanged |
+| `src/core/*.ts`, `src/admission.ts`, `src/limits.ts`, `src/kv.ts`, `src/setup.ts`, `src/infra/text.ts`, `src/infra/health.ts`, `src/infra/paths.ts`, `src/infra/commands.ts` | Copied unchanged |
 | `src/policy.ts` | Copied; one import now points at `src/infra/worker-commands.ts` |
-| `src/admission.ts`, `src/limits.ts`, `src/infra/text.ts` | Copied unchanged |
 | `src/infra/worker-commands.ts` | The `WORKER_COMMANDS` constant, moved out of upstream `src/infra/environment.ts` |
+| `src/infra/environment.ts` | Copied; commands run through Node's `child_process` instead of DeepSeek Harness's subprocess service |
+| `src/deployment.ts` | Copied; the machine configuration is a JSON file read with zod instead of a DeepSeek Harness plugin configuration |
+| `src/app/*.ts`, `src/app/tools/*.ts`, `src/app/views/*.ts` | Copied, except `runtime.ts`, `sessions.ts`, `delivery.ts`, `role-models.ts`, `retry-health.ts` and `migration.ts`, which are rewritten for the Agent SDK or left out. The copies changed where they used DeepSeek Harness: `http.ts` is a plain Node request handler, `resources.ts` reads transcripts and models through the host, `context.ts` reads Agent SDK messages, `store.ts` has no schema migration, `settings.ts` checks models through the host, `tools/main.ts` and `assessment.ts` return images as MCP content |
+| `src/sources/*.ts` | Copied; a Source is a `SourcePlugin` instead of a DeepSeek Harness plugin, and Feishu images are MCP image content |
+| `src/executor/common.ts` | Upstream `src/executor/dsh.ts` without its executor class; worker Session ids are UUIDs |
+| `prompts/`, `skills/`, `locale/` | Copied; the text names this host where it named DeepSeek Harness |
 | `tests/core-engine.spec.ts`, `tests/stage.spec.ts` | Copied unchanged |
 
 Those files are covered by the upstream license:
