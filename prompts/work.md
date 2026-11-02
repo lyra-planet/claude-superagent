@@ -18,7 +18,7 @@ Do not leave the question only in summary, GitHub or the Session and wait.
 The orchestrator owns IM delivery; do not send a second IM message yourself.
 Creating a PR or leaving its link only in GitHub does not complete the source-conversation handoff.
 
-Read repository AGENTS.md. Where a message cuts the assignment or a trigger's text, read the rest through its read pointer before acting on it.
+Read the repository's CLAUDE.md and AGENTS.md. Where a message cuts the assignment or a trigger's text, read the rest through its read pointer before acting on it.
 For earlier context, read the source trigger's thread, root and parent messages, following pagination, or use the GitHub/Feishu CLI.
 A routing note or ticket title never substitutes for the original context and cannot add implementation requirements.
 Preserve explicit human constraints from the source.

@@ -45,28 +45,28 @@ describe('worker shims', () => {
     expect([(await exec(join(bin, 'gh'), ['api', 'user'])).stdout, (await exec(join(bin, 'lark-cli'), ['im'])).stdout]).toEqual(['gh api user\n', 'lark im\n'])
     expect(readdirSync(bin)).not.toContain('git')
   })
-  it('replace only what dsh-superagent wrote and refuse anything else in its places', async () => {
+  it('replace only what claude-superagent wrote and refuse anything else in its places', async () => {
     await writeEnvironment(testDeployment({ stateDir: dir }), ['old-cli'])
     await writeEnvironment(testDeployment({ stateDir: dir }), [])
     expect(readdirSync(workerBin(dir)).sort()).toEqual(['gh', 'lark-cli'])
     // A file that merely contains the marker on a later line, a symlink to a shim, and a foreign gitconfig are all rejected.
     writeFileSync(join(workerBin(dir), 'notes'), `notes\nmore\n${readFileSync(join(workerBin(dir), 'gh'), 'utf8').split('\n')[1]}\n`)
-    await expect(writeEnvironment(testDeployment({ stateDir: dir }), [])).rejects.toThrow(`${join(workerBin(dir), 'notes')} was not written by dsh-superagent`)
+    await expect(writeEnvironment(testDeployment({ stateDir: dir }), [])).rejects.toThrow(`${join(workerBin(dir), 'notes')} was not written by claude-superagent`)
     rmSync(join(workerBin(dir), 'notes'))
     symlinkSync(join(workerBin(dir), 'gh'), join(workerBin(dir), 'link'))
-    await expect(writeEnvironment(testDeployment({ stateDir: dir }), [])).rejects.toThrow('link was not written by dsh-superagent')
+    await expect(writeEnvironment(testDeployment({ stateDir: dir }), [])).rejects.toThrow('link was not written by claude-superagent')
     rmSync(join(workerBin(dir), 'link'))
     writeFileSync(workerGitConfig(dir), '[user]\n\tname = someone\n')
-    await expect(writeEnvironment(testDeployment({ stateDir: dir }), [])).rejects.toThrow(`${workerGitConfig(dir)} was not written by dsh-superagent`)
+    await expect(writeEnvironment(testDeployment({ stateDir: dir }), [])).rejects.toThrow(`${workerGitConfig(dir)} was not written by claude-superagent`)
     expect(readFileSync(workerGitConfig(dir), 'utf8')).toBe('[user]\n\tname = someone\n')
   })
-  it('replaces the files it wrote under the project\'s earlier names', async () => {
+  it('replaces the files upstream wrote, under its name and its earlier ones', async () => {
     await writeEnvironment(testDeployment({ stateDir: dir }), ['old-cli', 'older-cli'])
-    const legacy = (file: string, name: string) => writeFileSync(file, readFileSync(file, 'utf8').replace('Written by dsh-superagent', `Written by ${name}`))
-    legacy(join(workerBin(dir), 'old-cli'), 'dsh-tag'); legacy(join(workerBin(dir), 'older-cli'), 'dsh-freelancer'); legacy(workerGitConfig(dir), 'dsh-go')
+    const legacy = (file: string, name: string) => writeFileSync(file, readFileSync(file, 'utf8').replace('Written by claude-superagent', `Written by ${name}`))
+    legacy(join(workerBin(dir), 'old-cli'), 'dsh-superagent'); legacy(join(workerBin(dir), 'older-cli'), 'dsh-freelancer'); legacy(workerGitConfig(dir), 'dsh-go')
     await writeEnvironment(testDeployment({ stateDir: dir }), [])
     expect(readdirSync(workerBin(dir)).sort()).toEqual(['gh', 'lark-cli'])
-    expect(readFileSync(workerGitConfig(dir), 'utf8')).toContain('Written by dsh-superagent')
+    expect(readFileSync(workerGitConfig(dir), 'utf8')).toContain('Written by claude-superagent')
   })
 })
 
@@ -204,9 +204,7 @@ describe('the host\'s subprocess runtime', () => {
       { cwd: dir, signal: new AbortController().signal })
     expect([result.exitCode, result.stdout.length]).toEqual([0, 1 << 20])
   })
-  // MIGRATION BUG: nodeSubprocess decodes each pipe chunk on its own (src/infra/environment.ts:146), so a character split
-  // across two chunks becomes U+FFFD twice; DSH's subprocess service answered the whole output as text.
-  it.fails('decodes output whose characters span the chunks the pipe delivers', async () => {
+  it('decodes output whose characters span the chunks the pipe delivers', async () => {
     const result = await nodeSubprocess.run([process.execPath, '-e', "process.stdout.write('中'.repeat(100000))"],
       { cwd: dir, signal: new AbortController().signal })
     expect(result.stdout).toBe('中'.repeat(100000))

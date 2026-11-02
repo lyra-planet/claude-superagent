@@ -38,6 +38,7 @@ export interface Machine {
 
 /** The machine settings of a state directory, from its parsed `config.json`. */
 export function machineOf(stateDir: string, config: DeploymentConfig): Machine {
+  if (!isAbsolute(stateDir)) throw new Error(`The state directory must be an absolute path: ${stateDir}`)
   const { port, allowedHosts, claudeConfigDir, promptMaxChars, admissionContextMaxPages, admissionContextTimeoutMs } = config
   return { stateDir, port, allowedHosts, claudeConfigDir: claudeConfigDir || join(stateDir, 'claude'), promptMaxChars: volatile(promptMaxChars),
     admissionContextMaxPages: volatile(admissionContextMaxPages), admissionContextTimeoutMs: volatile(admissionContextTimeoutMs) }

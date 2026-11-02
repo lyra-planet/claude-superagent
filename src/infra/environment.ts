@@ -143,7 +143,12 @@ export const nodeSubprocess: SubprocessRuntime = {
     let child: ReturnType<typeof spawn>
     try { child = spawn(argv[0]!, argv.slice(1), { cwd, env: { ...inherited, ...env }, stdio: ['ignore', 'pipe', 'pipe'] }) }
     catch (error) { reject(error); return }
-    const take = (limit: number) => { let text = ''; return { add: (chunk: Buffer) => { if (text.length < limit) text += chunk.toString('utf8').slice(0, limit - text.length) }, get: () => text } }
+    // Bytes are kept up to the limit and decoded once at the end, so a character the pipe splits across chunks stays whole.
+    const take = (limit: number) => {
+      const chunks: Buffer[] = []; let size = 0
+      return { add: (chunk: Buffer) => { if (size < limit) { const part = chunk.subarray(0, limit - size); chunks.push(part); size += part.length } },
+        get: () => new TextDecoder('utf-8').decode(Buffer.concat(chunks)) }
+    }
     const stdout = take(1 << 20), stderr = take(1 << 16)
     child.stdout!.on('data', stdout.add); child.stderr!.on('data', stderr.add)
     let kill: ReturnType<typeof setTimeout> | undefined
