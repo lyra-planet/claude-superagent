@@ -29,9 +29,9 @@ It keeps dsh-superagent's shape:
 
 [docs/host-probes.md](docs/host-probes.md) has how each of the last three was tested.
 
-Planned differences from upstream:
+Planned differences from upstream, detailed in [docs/design.md](docs/design.md):
 
-- The router gets no shell at all. Upstream keeps `bash` on its router and relies on the prompt.
+- The router gets no built-in tool at all (`tools: []`). Upstream keeps `bash` on its router and relies on the prompt.
 - Rules upstream leaves to prompt text, such as "never merge your own pull request", become hooks.
 - A follow-up from someone outside the allowed list no longer reaches a full-access worker as if they had asked for it.
 
