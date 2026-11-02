@@ -52,6 +52,25 @@ What a first version of the probe and an end-to-end run showed besides:
 - While a command runs, the sandbox mounts device files over `.bashrc .bash_profile .profile .zshrc .zprofile .gitconfig .gitmodules .ripgreprc .mcp.json .idea .vscode` and twelve paths under `.claude/` in the working directory. `git status` lists them, `git add -A` fails on them (`can only add regular files`), and only an empty `.claude/.cc-writes/` stays afterwards.
 - Inside the sandbox `SANDBOX_RUNTIME` is set and `HTTPS_PROXY` points at the sandbox's own proxy; a wrapper that sets its own proxy has to keep that one.
 
+### Free text in commands
+
+`text:weak[:allow]`: one query per command, each run exactly as written or not at all, in a git repository of its own, against a stand-in `gh` that also tries to write outside the working directory (with `POC_OUTSIDE_PARENT` away from `/tmp`). The draft file holds `Sets indent_size = 2.`. `allow` adds what the host gives a sandboxed worker: `Bash(gh:*)` in `allowedTools`, and a hook that denies `gh pr merge`. Weaker sandbox, claude-opus-5-5, Claude Code 2.1.310.
+
+| Command | Defaults | `allow` |
+|---|---|---|
+| `gh pr create … --body "Sets indent_size = 2."` | Refused | Ran |
+| `gh pr create … --body "Sets 2-space indents."` | Ran | Ran |
+| `gh pr create … --body-file <draft>` | Ran | Ran |
+| `gh api …/comments -f body="Done."` | Refused | Ran |
+| `gh api graphql -F query=@<draft>` | Refused | Ran |
+| `git log --format=%h -1` | Ran | Ran |
+| `git commit … -m "Set indent_size = 2"` | Refused | Refused |
+| `git commit … -F <draft>` | Ran | (the model changed the command) |
+| `gh pr merge 1` | Ran (no hook) | Denied by the hook |
+| The stand-in `gh` wrote outside the working directory | No | No |
+
+An earlier run without the git repository and with other bodies agreed: a quoted argument with an `=` in it is refused (`"… k = v"`, `"k=v"` after a newline, `--jq '.state == "OPEN"'`), one without is not, an unquoted `--format=%h` is not, and text on stdin through a heredoc was not, except into a `gh api` call that writes. An allow rule for gh takes the question away and keeps the sandbox; for other commands the text goes in a file.
+
 So, in an unprivileged container:
 
 - `failIfUnavailable: true` fails closed: with a missing dependency or a sandbox that cannot start, nothing runs unsandboxed.
@@ -63,7 +82,7 @@ So, in an unprivileged container:
 
 ```sh
 npm install
-node --experimental-strip-types --no-warnings poc/host-probes.ts steer:next   # steer:now steer:later steer:inject background sandbox sandbox:weak worktree:weak:allow
+node --experimental-strip-types --no-warnings poc/host-probes.ts steer:next   # steer:now steer:later steer:inject background sandbox sandbox:weak worktree:weak:allow text:weak:allow
 ```
 
-The sandbox needs `bubblewrap` and `socat` on PATH. Put the outside directory of the sandbox probe away from `/tmp` with `POC_OUTSIDE_PARENT`. A probe uses its own `CLAUDE_CONFIG_DIR` under `poc/.runs/` and drops the variables a running Claude Code session gives its children, so it can run from inside one.
+The sandbox needs `bubblewrap` and `socat` on PATH. Put the outside directory of the `sandbox` and `text` probes away from `/tmp` with `POC_OUTSIDE_PARENT`. A probe uses its own `CLAUDE_CONFIG_DIR` under `poc/.runs/` and drops the variables a running Claude Code session gives its children, so it can run from inside one.

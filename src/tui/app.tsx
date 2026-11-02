@@ -6,7 +6,7 @@
 import { Box, Static, Text, useApp, useInput, useStdout } from 'ink'
 import { useEffect, useRef, useState } from 'react'
 import type { LiveEvent, ServiceClient, TerminalTicket } from '../remote.ts'
-import { COMMANDS, activityEntries, entry, messageEntry, parse, short, stageText, suggestions, ticketEntry, ticketMark, ticketNamed, type Entry } from './model.ts'
+import { COMMANDS, activityEntries, entry, messageEntry, parse, short, stageText, suggestions, ticketEntry, ticketMark, ticketNamed, tilde, type Entry } from './model.ts'
 
 /** What the terminal leaves to its caller: open a worker's Session in Claude Code, or stop the service. */
 export type Exit = { kind: 'quit' } | { kind: 'shutdown' } | { kind: 'open'; ticket: TerminalTicket; now: boolean; fork: boolean }
@@ -53,7 +53,7 @@ export function App({ client, stateDir, resumed, onExit }: AppProps) {
       setTickets(known)
       for (const ticket of known) marks.current.set(ticket.id, ticketMark(ticket))
       if (resumed) return
-      const header = entry('header', `claude-superagent · ${stateDir}`)
+      const header = entry('header', `claude-superagent · ${tilde(stateDir)}`)
       const latest = [...conversations].sort((a, b) => a.at.localeCompare(b.at)).at(-1)
       if (!latest) { print(header, entry('info', 'Type a request for the agent, or /help.')); return }
       const { messages } = await client.conversation(latest.id)
@@ -238,8 +238,8 @@ function Line({ item }: { item: Entry }) {
     case 'agent': return <Marked mark="●" color={item.tone === 'acknowledgement' ? 'cyan' : item.tone === 'question' ? 'yellow' : 'green'} text={item.text} space />
     case 'ticket': return <Marked mark="  ◆" color={item.tone === 'ended' ? 'gray' : item.tone === 'person' || item.tone === 'held' ? 'yellow' : 'blue'} text={item.text} tinted />
     case 'activity': return <Marked mark="  ⎿" color={item.tone === 'error' ? 'red' : 'gray'} text={item.text} tinted />
-    case 'error': return <Text color="red">  {item.text}</Text>
-    default: return <Text color="gray">  {item.text}</Text>
+    case 'error': return <Box paddingLeft={2}><Text color="red">{item.text}</Text></Box>
+    default: return <Box paddingLeft={2}><Text color="gray">{item.text}</Text></Box>
   }
 }
 /** A mark and its text in two columns, so a wrapped line goes on under the text as in Claude Code's terminal. */

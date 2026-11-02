@@ -37,6 +37,12 @@ export const WORKER_DENIED = ['AskUserQuestion', 'ExitPlanMode', 'EnterPlanMode'
 const KEPT_SKILL_REVISIONS = 5
 /** Tools a worker runs without a prompt; Bash is added when the sandbox is off, else the sandbox approves sandboxed commands. */
 export const WORKER_ALLOWED = [`mcp__${MCP_SERVER}__*`, 'Read', 'Edit', 'Write', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'TodoWrite', 'Agent', 'Skill']
+/**
+ * With the sandbox on, Claude Code still refuses a sandboxed gh call that writes through `gh api` or carries quoted text
+ * with an `=`, such as a pull request body describing a setting (docs/host-probes.md, `text`). Writing to GitHub is a
+ * worker's work and the hook stops what it may not do there, so gh is allowed outright; it still runs in the sandbox.
+ */
+export const SANDBOXED_ALLOWED = [...WORKER_ALLOWED, 'Bash(gh:*)']
 
 /** Host dependencies used by `Sessions`. */
 export interface SessionsHost {
@@ -238,7 +244,7 @@ export class Sessions {
       ...modelOptions(model),
       systemPrompt: { type: 'preset', preset: 'claude_code', append: `[claude-superagent prompt revision ${version.revision}]\n${prompt}` },
       mcpServers: { [MCP_SERVER]: mcpServer(this.host.tools(current)) }, disallowedTools: WORKER_DENIED,
-      allowedTools: bash ? [...WORKER_ALLOWED, 'Bash'] : WORKER_ALLOWED, permissionMode: 'dontAsk', ...sandbox,
+      allowedTools: bash ? [...WORKER_ALLOWED, 'Bash'] : SANDBOXED_ALLOWED, permissionMode: 'dontAsk', ...sandbox,
       hooks: this.host.hooks(current), plugins: [{ type: 'local', path: plugin }], settingSources: [], env: { ...workerSessionEnvironment(this.host.environment()), ...env },
       stderr: line => { this.host.logger.warn('worker %s: %s', ticket.id.slice(0, 12), line.trimEnd()) },
     }

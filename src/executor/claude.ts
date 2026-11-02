@@ -10,7 +10,7 @@ import type { HealthEntry } from '../infra/health.ts'
 import type { Logger } from '../infra/log.ts'
 import type { Store } from '../app/store.ts'
 import { Later, type Effects } from '../app/effects.ts'
-import type { Variable } from '../app/execution-environment.ts'
+import { draftsDirectory, type Variable } from '../app/execution-environment.ts'
 import { resultRelay } from '../app/notices.ts'
 import { subagent, type ClaudeSession } from '../app/session.ts'
 import type { Sessions } from '../app/sessions.ts'
@@ -196,6 +196,7 @@ export class ClaudeExecutor implements Executor {
         throw new PrepareFailed(`The prepare command failed: ${error instanceof Error ? error.message : String(error)}`)
       })
     await mkdir(directory, { recursive: true })
+    await mkdir(draftsDirectory(directory, ticket.execution?.name ?? ''), { recursive: true })
     await verifyDirectory(directory, this.host.subprocess, this.host.lifetime)
   }
   /** Launch a queued Assignment unless its ticket ended or a newer Assignment replaced it. */

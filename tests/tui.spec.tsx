@@ -3,7 +3,8 @@ import { render } from 'ink-testing-library'
 import { afterEach, expect, it, vi } from 'vitest'
 import type { LiveEvent, TerminalTicket } from '../src/remote.ts'
 import { App, type AppProps, type Exit } from '../src/tui/app.tsx'
-import { parse, plain, ticketNamed } from '../src/tui/model.ts'
+import { activityOf } from '../src/app/activity.ts'
+import { parse, plain, ticketNamed, tilde } from '../src/tui/model.ts'
 import { waitUntil } from './fixtures/async.ts'
 
 const ticket = (overrides: Partial<TerminalTicket> = {}): TerminalTicket => ({ id: 'a1b2c3d4e5f6', title: 'Fix the README typo', state: 'open', stage: 'working',
@@ -140,4 +141,29 @@ it('prints a ticket\'s line again only when what it shows changed', async () => 
   s.emit({ type: 'ticket', ticket: ticket({ id: 'b0b0b0b0b0b0', stage: 'idle' } as never) })
   await waitUntil(() => app.lastFrame()!.includes('◆ b0b0b0 Fix the README typo · waiting for a message'))
   expect(app.lastFrame()!.split('◆ b0b0b0 Fix the README typo · working').length - 1).toBe(1)
+})
+
+it('names a state directory under the home directory as a shell does', () => {
+  expect(tilde('/home/alice/.claude-superagent', '/home/alice')).toBe('~/.claude-superagent')
+  expect(tilde('/home/alice', '/home/alice')).toBe('~')
+  expect(tilde('/home/alicia/state', '/home/alice')).toBe('/home/alicia/state')
+  expect(tilde('/srv/state', '')).toBe('/srv/state')
+})
+
+it('shortens the long absolute paths in a worker\'s command, as in a file tool\'s, and leaves a URL whole', () => {
+  const command = 'git commit -q -F /srv/state/work/.drafts/fix-typo-1/commit.txt && gh pr view https://github.com/acme/widgets/pull/1 > /dev/null'
+  expect(activityOf({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command } }] } }))
+    .toEqual([{ kind: 'tool', text: 'Bash(git commit -q -F …/.drafts/fix-typo-1/commit.txt && gh pr view https://github.com/acme/widgets/pull/1 > /dev/null)' }])
+})
+
+it('keeps a wrapped line of the ticket list under its own indent', async () => {
+  const s = service()
+  s.client.tickets.mockResolvedValue({ tickets: [ticket({ title: 'Add an .editorconfig with UTF-8, LF line endings, 2-space indents and a final newline, then open a PR' })] })
+  const { all, type, enter } = draw(s.props)
+  await waitUntil(() => all().includes('conversation c1'))
+  await type('/tickets'); await enter()
+  await waitUntil(() => all().includes('1. a1b2c3'))
+  const listed = all().split('\n').slice(all().split('\n').findIndex(line => line.includes('1. a1b2c3')))
+  expect(listed[1]).toMatch(/^ {2}/)
+  expect(listed.slice(0, 2).join(' ')).toContain('then open a PR · working')
 })

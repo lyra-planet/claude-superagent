@@ -34,7 +34,7 @@ The Session is a `query()` of the Agent SDK in streaming input mode. It opens wh
 | `systemPrompt` | Claude Code's own prompt (the `claude_code` preset), with the worker's prompt appended, as 004 Prompts describes |
 | `tools` | Claude Code's, less `disallowedTools`: those that ask or show a person something, change the configuration, or start work outside the worker's slot (`WORKER_DENIED` in `src/app/sessions.ts`: questions, plan mode, worktrees, cron and scheduled wake-ups, remote triggers, messages to other Sessions, workflows, artifacts, notebook edits) |
 | `mcpServers` | The host's tools, as an in-process MCP server named `superagent`, so the model calls `orchestrator_report` as `mcp__superagent__orchestrator_report` |
-| `permissionMode` | `dontAsk`: what is not allowed is denied, never asked. `allowedTools` (`WORKER_ALLOWED`) lists the host's tools, the file tools, web search and fetch, the todo list, subagents and skills, and Bash only when the sandbox is off; with the sandbox on, the sandbox approves sandboxed Bash |
+| `permissionMode` | `dontAsk`: what is not allowed is denied, never asked. `allowedTools` (`WORKER_ALLOWED`) lists the host's tools, the file tools, web search and fetch, the todo list, subagents and skills, and Bash only when the sandbox is off; with the sandbox on, the sandbox approves sandboxed Bash, and `gh` is allowed outright (`SANDBOXED_ALLOWED`, below) |
 | `sandbox` | From the Execution settings, below |
 | `hooks` | One `PreToolUse` hook, below |
 | `plugins` | The host's skills as a local plugin under `<stateDir>/plugin`, one directory per prompt revision |
@@ -114,6 +114,7 @@ The prepare command and Executor instructions receive the same execution variabl
 | Variable | Registered by | Value |
 | --- | --- | --- |
 | `DSH_SUPERAGENT_DIR`, `DSH_SUPERAGENT_NAME`, `DSH_SUPERAGENT_TICKET` | Executor | The Ticket's directory, short name and id |
+| `DSH_SUPERAGENT_DRAFTS` | Executor | A directory beside the Ticket's, outside its checkout, for text a command takes from a file |
 | `DSH_SUPERAGENT_BLOCKED_COMMANDS` | Executor | Commands the Executor may not run |
 | `DSH_SUPERAGENT_GITHUB_REPOSITORY` | GitHub | The repository the Source watches, `owner/name` |
 | `DSH_SUPERAGENT_GITHUB_ACCOUNT`, `DSH_SUPERAGENT_GITHUB_COMMIT_EMAIL` | GitHub | The agent account and its commit email |
@@ -145,6 +146,13 @@ While a sandboxed command runs, the sandbox mounts device files over the shell, 
 
 Claude Code asks before `git -c …`, `VAR=… git …` and a command that changes directory and runs git, and `dontAsk` denies what it would ask about. So the worker's git gets the agent's identity from the Session's environment: `GIT_CONFIG_COUNT` with `user.name` and `user.email` set to the agent account and its no-reply address (`workerGitVariables` in `src/infra/environment.ts`), which outranks a clone's own configuration. A worker commits with a plain `git commit`, and with `--author` for an author the Delivery requirements name. This holds in every sandbox mode. The same variables carry the sandbox's `core.excludesFile`.
 
+### Text a command takes
+
+Under `dontAsk`, Claude Code refuses some sandboxed commands it otherwise runs: one whose quoted text holds an `=` (`--body "Sets indent_size = 2."`, `git commit -m "… = …"`), and a `gh api` call that writes (the `text` probe in `docs/host-probes.md`). A pull request body that describes a setting was enough to stop a worker before its pull request.
+
+- Writing to GitHub is a worker's work, and the hook stops what it may not do there, so sandboxed workers have `Bash(gh:*)` in `allowedTools` (`SANDBOXED_ALLOWED` in `src/app/sessions.ts`). gh then runs without the question, still in the sandbox, and the hook still denies a merge.
+- Each Ticket has a drafts directory, `DSH_SUPERAGENT_DRAFTS` (`<execution root>/.drafts/<name>`), made with its directory and outside its checkout. A worker writes a pull request body, a comment or a commit message there with Write and passes the path: `gh pr create --body-file`, `gh api -F body=@<file>`, `git commit -F`. The shell never sees the text, and nothing in the directory is committed.
+
 The git configuration setup writes (`<stateDir>/worker-gitconfig`) replaces the operator's global and system git configuration for workers: the agent's `gh` as the github.com credential helper, GitHub SSH addresses rewritten to HTTPS, Git LFS filters, and `user.useConfigOnly`. `GH_TOKEN`, `GITHUB_TOKEN` and the operator's git identity variables are removed, and git never prompts for credentials.
 
 ### The hook
@@ -165,6 +173,7 @@ The hook reads the Ticket and the blocked commands at each call, so a change app
 
 - **A finished background job wakes the worker.** DeepSeek Harness collected a job's end and told the worker at its next turn; Claude Code starts a turn by itself. This also holds for jobs left running after a handoff.
 - **A person's message cannot reach a worker during a long foreground command.** A `next` message is seen after the running tool call returns. Upstream's worker preset moved a foreground command to the background after 5 seconds, so a follow-up reached the worker at its next step; Claude Code has no such setting, and a follow-up waits until the command ends. The work prompt tells workers to run long commands as background jobs.
+- **Some commands need their text in a file.** Claude Code refuses a sandboxed command whose quoted text holds an `=`; DeepSeek Harness ran it. Workers pass text through `DSH_SUPERAGENT_DRAFTS`, as above.
 - **The router cannot wait.** It has no shell and no job tools, so there is no `sleep` or job wait to guard against.
 - **Two processes may not write one Session.** A person who opens a worker's Session holds it, as above, where DeepSeek Harness's UI let a person write into a running Session.
 

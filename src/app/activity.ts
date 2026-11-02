@@ -16,11 +16,13 @@ const oneLine = (text: string, limit: number) => {
 }
 /** A long absolute path as its last three segments, as a person reads where in the work it is. */
 const shortPath = (path: string) => { const parts = path.split('/'); return path.startsWith('/') && parts.length > 4 ? `…/${parts.slice(-3).join('/')}` : path }
+/** A command with each long absolute path in it shortened; a URL's path, which follows a `:`, stays. */
+const shortPaths = (command: string) => command.replace(/(^|[\s='"(])(\/[^\s'"`;|&)]+)/g, (_, before: string, path: string) => before + shortPath(path))
 /** What a tool call works on: the input field a person reads it by, as Claude Code's terminal names it. */
 function subject(name: string, input: Record<string, unknown>): string {
   for (const field of ['command', 'file_path', 'pattern', 'url', 'query', 'description', 'skill', 'state', 'kind']) {
     const value = input[field]
-    if (typeof value === 'string' && value) return oneLine(field === 'file_path' ? shortPath(value) : value, INPUT_CHARS)
+    if (typeof value === 'string' && value) return oneLine(field === 'file_path' ? shortPath(value) : field === 'command' ? shortPaths(value) : value, INPUT_CHARS)
   }
   return name.startsWith('mcp__') ? '' : oneLine(JSON.stringify(input), INPUT_CHARS)
 }

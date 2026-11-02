@@ -11,6 +11,8 @@
  *                                 enableWeakerNestedSandbox, for containers where bubblewrap cannot mount /proc
  *   worktree[:weak][:allow]       sandboxed git work: a commit in a worktree of a clone outside cwd, GitHub through the
  *                                 network filter, a write to the clone's hooks; `allow` adds what the host allows
+ *   text[:weak][:allow]           sandboxed Bash under dontAsk: which ways of handing a command free text, such as a pull
+ *                                 request body, Claude Code runs and which it refuses; `allow` adds what the host allows
  *
  * Every probe runs in a fresh directory under poc/.runs/, loads no settings (settingSources: []), persists no session,
  * and prints a timeline of the SDK messages. Set POC_MODEL to choose the model.
@@ -243,9 +245,59 @@ async function worktree(cwd: string, weak: boolean, allow: boolean): Promise<voi
 const probe = process.argv[2] ?? ''
 await mkdir(RUNS, { recursive: true })
 const cwd = await mkdtemp(join(RUNS, `${probe.replace(/[^a-z]+/g, '-')}-`))
+/**
+ * Which ways of handing a command free text a sandboxed worker can use. Each command runs in a query of its own, in a git
+ * repository of its own, against a stand-in gh that also tries to write outside the working directory; the draft file
+ * holds text with an `=` in it, as a configuration change's description would. `allow` adds what the host gives a
+ * sandboxed worker: `Bash(gh:*)` in allowedTools, and a PreToolUse hook that denies `gh pr merge`.
+ */
+async function freeText(cwd: string, weak: boolean, allow: boolean): Promise<void> {
+  const base = cwd.split('/').at(-1)!
+  // As in the sandbox probe: the sandbox lets Bash write its temporary directory, so POC_OUTSIDE_PARENT puts this elsewhere.
+  const outside = await mkdtemp(join(process.env.POC_OUTSIDE_PARENT ?? RUNS, 'outside-'))
+  await mkdir(join(outside, 'bin'), { recursive: true })
+  await writeFile(join(outside, 'bin', 'gh'), `#!/bin/sh\necho STUB_GH_RAN\necho x > ${outside}/gh-wrote 2>/dev/null\n`)
+  await chmod(join(outside, 'bin', 'gh'), 0o755)
+  await new Promise<void>((resolve, reject) => { execFile('git', ['-C', cwd, 'init', '-q'], error => { if (error) reject(error); else resolve() }) })
+  await writeFile(join(cwd, '..', `${base}-draft.md`), 'Sets indent_size = 2.\n')
+  const draft = `../${base}-draft.md`
+  const commands = [
+    'gh pr create --title "Add .editorconfig" --body "Sets indent_size = 2."',
+    'gh pr create --title "Add .editorconfig" --body "Sets 2-space indents."',
+    `gh pr create --title "Add .editorconfig" --body-file ${draft}`,
+    'gh api repos/o/r/issues/1/comments -f body="Done."',
+    `gh api graphql -F query=@${draft}`,
+    'git log --format=%h -1',
+    'git commit --allow-empty -q -m "Set indent_size = 2"',
+    `git commit --allow-empty -q -F ${draft}`,
+    'gh pr merge 1',
+  ]
+  const verdicts: string[] = []
+  for (const [index, command] of commands.entries()) {
+    const inbox = new Inbox()
+    inbox.push(`Run this command with the Bash tool exactly as written, in one call, then stop. Do not retry or work around a failure.\n\n<command>\n${command}\n</command>`)
+    const messages = await run({
+      cwd, permissionMode: 'dontAsk', disallowedTools: ['Write', 'Edit', 'Agent'], ...allow ? { allowedTools: ['Bash(gh:*)'] } : {},
+      env: probeEnv({ PATH: `${join(outside, 'bin')}:${process.env.PATH ?? ''}`, GIT_AUTHOR_NAME: 'probe', GIT_AUTHOR_EMAIL: 'probe@example.com', GIT_COMMITTER_NAME: 'probe', GIT_COMMITTER_EMAIL: 'probe@example.com' }),
+      systemPrompt: 'You are a test agent. Follow the instructions exactly and keep text short.',
+      sandbox: { enabled: true, failIfUnavailable: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, ...weak ? { enableWeakerNestedSandbox: true } : {} },
+      ...allow ? { hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [async (input: any) => /\bgh\s+pr\s+merge\b/.test(String(input.tool_input?.command ?? ''))
+        ? { hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision: 'deny' as const, permissionDecisionReason: 'people merge pull requests' } } : {}] }] } } : {},
+    }, inbox, message => (message as any).type === 'result', 120_000)
+    const calls = messages.flatMap((message: any) => message.type === 'assistant' ? message.message.content.filter((block: any) => block.type === 'tool_use') : [])
+    const outputs = JSON.stringify(messages.flatMap((message: any) => message.type === 'user' && Array.isArray(message.message?.content) ? message.message.content : []))
+    const verdict = calls[0]?.input?.command !== command ? 'not run as written' : /people merge pull requests/.test(outputs) ? 'hook denied'
+      : /has been denied/.test(outputs) ? 'refused' : 'ran'
+    verdicts.push(`${index + 1}=${verdict}`)
+  }
+  const escaped = await stat(join(outside, 'gh-wrote')).then(() => true, () => false)
+  say(`VERDICT text${weak ? ':weak' : ''}${allow ? ':allow' : ''}: ${verdicts.join(', ')}; gh wrote outside cwd=${escaped}`)
+}
+
 say(`probe ${probe} in ${cwd} with ${MODEL}`)
 if (probe.startsWith('steer:')) await steer(probe.slice(6) as 'now' | 'next' | 'later' | 'inject', cwd)
 else if (probe === 'background') await background(cwd)
 else if (probe === 'sandbox' || probe === 'sandbox:weak') await sandbox(cwd, probe === 'sandbox:weak')
 else if (/^worktree(:weak)?(:allow)?$/.test(probe)) await worktree(cwd, probe.includes(':weak'), probe.endsWith(':allow'))
-else { console.error('Probes: steer:now steer:next steer:later steer:inject background sandbox sandbox:weak worktree[:weak][:allow]'); process.exit(2) }
+else if (/^text(:weak)?(:allow)?$/.test(probe)) await freeText(cwd, probe.includes(':weak'), probe.endsWith(':allow'))
+else { console.error('Probes: steer:now steer:next steer:later steer:inject background sandbox sandbox:weak worktree[:weak][:allow] text[:weak][:allow]'); process.exit(2) }

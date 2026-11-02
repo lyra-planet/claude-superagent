@@ -769,7 +769,8 @@ it('refuses an ended ticket\'s worker its tools, and restricts the main Session 
   const worker = started(sessionId)
   expect(worker.disallowedTools).toEqual(['AskUserQuestion', 'ExitPlanMode', 'EnterPlanMode', 'EnterWorktree', 'ExitWorktree', 'CronCreate', 'CronDelete',
     'CronList', 'RemoteTrigger', 'ScheduleWakeup', 'SendMessage', 'Workflow', 'Artifact', 'NotebookEdit'])
-  expect(worker.allowedTools).toEqual(['mcp__superagent__*', 'Read', 'Edit', 'Write', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'TodoWrite', 'Agent', 'Skill'])
+  // With the sandbox on, the sandbox approves Bash, and gh outright: Claude Code refuses some of its GitHub writes otherwise.
+  expect(worker.allowedTools).toEqual(['mcp__superagent__*', 'Read', 'Edit', 'Write', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'TodoWrite', 'Agent', 'Skill', 'Bash(gh:*)'])
 })
 
 it('gives an explicit ticket\'s worker a prompt without the limits of an inferred Mandate', async () => {

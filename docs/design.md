@@ -49,7 +49,7 @@ The router restarts, on the same Session, when it is idle and its assembled prom
 | `cwd` | the ticket directory, prepared by the prepare command (`init --clone` writes one that runs `git worktree add`) |
 | `tools` | Claude Code's preset; `disallowedTools` removes the interactive ones (questions, plan mode, worktrees, cron) |
 | `mcpServers` | `superagent` with upstream's worker tools |
-| `permissionMode` | `dontAsk`; `allowedTools` lists the superagent tools, file tools, web, todo, subagents and skills, and Bash only when the sandbox is off |
+| `permissionMode` | `dontAsk`; `allowedTools` lists the superagent tools, file tools, web, todo, subagents and skills, and Bash only when the sandbox is off; with it on, `Bash(gh:*)` |
 | `sandbox` | from the Execution settings, below |
 | `hooks.PreToolUse` | the host's rules, below |
 | `plugins` | the host's skills (`skills/`), as a local plugin written to `<stateDir>/plugin` |
@@ -64,10 +64,11 @@ The executor (`src/executor/claude.ts`) sends an Assignment with `later` and eac
 | `weak` | the same, with `enableWeakerNestedSandbox`, for containers where bubblewrap cannot mount `/proc`: other processes' `/proc` is visible |
 | `off` | runs as the service's OS user, approved outright |
 
-`failIfUnavailable` makes a missing sandbox an error instead of unsandboxed Bash. Claude Code itself keeps a clone's `.git/hooks` read-only. The `worktree` probe and an end-to-end run showed two more things the host has to provide:
+`failIfUnavailable` makes a missing sandbox an error instead of unsandboxed Bash. Claude Code itself keeps a clone's `.git/hooks` read-only. The `worktree` and `text` probes and end-to-end runs showed three more things the host has to provide:
 
 - Claude Code asks before `git -c …`, `VAR=… git …` and a command that changes directory and runs git; `dontAsk` denies them. So the worker's git gets the agent's identity through `GIT_CONFIG_COUNT` in the Session's environment, which outranks a clone's own config, and a worker commits with a plain `git commit` (`--author` for an author the Delivery requirements name). This holds in every sandbox mode.
 - While a command runs, the sandbox mounts device files over shell, git, editor and Claude Code configuration in the working directory (`.bashrc`, `.gitmodules`, `.vscode`, `.claude/settings.json`, …), and `git add -A` fails on them. Sandboxed, git reads `<stateDir>/sandbox-gitignore` as `core.excludesFile`, which lists them at the repository root.
+- Claude Code refuses a sandboxed command whose quoted text holds an `=`, and a `gh api` call that writes (the `text` probe). Sandboxed workers have `Bash(gh:*)` allowed, and hand a command its text in a file in their Ticket's drafts directory (`DSH_SUPERAGENT_DRAFTS`).
 
 ## Rules as hooks
 

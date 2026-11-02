@@ -1,4 +1,5 @@
 /** What the terminal shows and understands, apart from how Ink draws it: its lines, its commands, and how it names tickets. */
+import { homedir } from 'node:os'
 import type { LocalMessage } from '../sources/local.ts'
 import type { ActivityLine } from '../app/activity.ts'
 import type { TerminalTicket } from '../remote.ts'
@@ -15,6 +16,9 @@ let counter = 0
 export const entry = (kind: Entry['kind'], text: string, tone?: string): Entry => ({ id: `e${++counter}`, kind, text, ...tone ? { tone } : {} })
 
 /** A Markdown link shows as its text with the address after it: a terminal has no links to click. */
+/** A path under the home directory as `~/…`, as a shell prints it. */
+export const tilde = (path: string, home = homedir()): string =>
+  home && (path === home || path.startsWith(`${home}/`)) ? `~${path.slice(home.length)}` : path
 export const plain = (text: string): string => text.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '$1 ($2)')
 export const messageEntry = (message: LocalMessage): Entry =>
   message.agent ? entry('agent', plain(message.text), message.kind) : entry('person', message.text)
