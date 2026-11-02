@@ -9,7 +9,7 @@ Source: https://github.com/deepseek-ai/dsh-superagent-prototype, commit `6337fc8
 | Files here | Status |
 |---|---|
 | `src/core/*.ts`, `src/admission.ts`, `src/limits.ts`, `src/kv.ts`, `src/setup.ts`, `src/infra/text.ts`, `src/infra/health.ts`, `src/infra/paths.ts`, `src/infra/commands.ts` | Copied unchanged |
-| `src/policy.ts` | Copied; one import now points at `src/infra/worker-commands.ts` |
+| `src/policy.ts` | Copied; one import now points at `src/infra/worker-commands.ts`, and the Execution settings gained `sandbox` |
 | `src/infra/worker-commands.ts` | The `WORKER_COMMANDS` constant, moved out of upstream `src/infra/environment.ts` |
 | `src/infra/environment.ts` | Copied; commands run through Node's `child_process` instead of DeepSeek Harness's subprocess service |
 | `src/deployment.ts` | Copied; the machine configuration is a JSON file read with zod instead of a DeepSeek Harness plugin configuration |
@@ -19,7 +19,9 @@ Source: https://github.com/deepseek-ai/dsh-superagent-prototype, commit `6337fc8
 | `prompts/`, `skills/`, `locale/` | Copied; the text names this host where it named DeepSeek Harness |
 | `tests/core-engine.spec.ts`, `tests/stage.spec.ts` | Copied unchanged |
 
-Those files are covered by the upstream license:
+Everything else (`src/app/runtime.ts`, `sessions.ts`, `session.ts`, `hooks.ts`, `models.ts`, `src/executor/claude.ts`, `src/sources/local.ts`, `src/cli.ts`, `src/infra/log.ts`, `poc/`, `docs/`, the tests other than the two above) is this project's own.
+
+The files from upstream are covered by its license:
 
 ```
 MIT License

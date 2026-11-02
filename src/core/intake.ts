@@ -31,6 +31,9 @@ export class Intake extends EnginePart {
     const keys = trigger.threads.map(threadKey)
     // Track reached tickets and whether they were reached only via context threads (a ticket's own thread makes `context` false).
     const reached = new Map<string, { ticket: Ticket; context: boolean }>()
+    // A person the Policy does not let decide work (`Policy.owns`) reaches a ticket as context only: the worker reads the
+    // message but does not own it, it resumes nothing, and it goes to Eval like any message no ticket owns.
+    const owns = !trigger.human || (this.policy().owns?.(trigger) ?? true)
     for (const ref of trigger.threads) {
       const thread = this.thread(ref)
       if (!thread.lastAt || trigger.at > thread.lastAt) thread.lastAt = trigger.at
@@ -39,7 +42,7 @@ export class Intake extends EnginePart {
         const ticket = this.repo.tickets.get(ticketId)
         // Only a person's message on a non-context thread resumes an ended ticket; bots and CI do not (the Executor re-reads
         // threads when it resumes), and a human-stopped ticket receives nothing because its Mandate was withdrawn.
-        const followed = !!thread.context?.includes(ticketId)
+        const followed = !!thread.context?.includes(ticketId) || !owns
         const resumes = trigger.human && ticket?.ended?.by !== 'human' && !followed
         if (!ticket || (!liveTicket(ticket) && !resumes)) continue
         reached.set(ticketId, { ticket, context: followed && (reached.get(ticketId)?.context ?? true) })

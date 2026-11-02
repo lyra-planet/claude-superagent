@@ -214,6 +214,14 @@ export function settingsPolicy(settings: Settings, sources: SourceScope): Policy
       return { admissible: false, reason: !allowed ? 'not_a_member' : receivable && admission === 'ignore' ? 'admission_ignored' : 'no_mention' }
     },
     admitsInferred: rules => mode === 'auto' && rules.length > 0 && rules.every(id => settings.policy.rules.some(rule => rule.enabled && rule.id === id)),
+    // A follow-up is a person's own when they are on the Source's list, or their admission cell makes them explicit there.
+    owns(trigger) {
+      if (!trigger.human) return false
+      if (allowedSender(settings, trigger.actor)) return true
+      const scope = listened(sources, trigger.source, trigger.meta)
+      const row = scope.listened ? scope.row : undefined
+      return !!trigger.addressed && admissionOf(settings, trigger.source, row, 'unlistedAddressed') === 'explicit'
+    },
     revalidate(mandate: Mandate) {
       // Revalidation rules follow docs/002 (Eval path; Resume revalidates).
       const { basis } = mandate
