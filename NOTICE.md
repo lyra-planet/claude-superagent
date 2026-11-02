@@ -25,7 +25,7 @@ Source: https://github.com/deepseek-ai/dsh-superagent-prototype, commit `6337fc8
 | `tests/core-engine.spec.ts`, `tests/stage.spec.ts` | Copied unchanged |
 | The other `tests/*.spec.ts(x)` named after upstream's, and `tests/fixtures/` | Copied; adapted where the host changed, as their commits say |
 
-Everything else (`src/app/runtime.ts`, `sessions.ts`, `session.ts`, `hooks.ts`, `models.ts`, `src/executor/claude.ts`, `src/sources/local.ts`, `src/cli.ts`, `src/infra/log.ts`, `poc/`, `docs/design.md`, `docs/host-probes.md`, `src/app/panel.ts`, and the tests upstream does not have: `hooks`, `local`, `paths`, `panel-handler`) is this project's own.
+Everything else (`src/app/runtime.ts`, `sessions.ts`, `session.ts`, `hooks.ts`, `models.ts`, `src/executor/claude.ts`, `src/sources/local.ts`, `src/cli.ts`, `src/infra/log.ts`, `poc/`, `docs/design.md`, `docs/host-probes.md`, `src/app/panel.ts`, and the tests upstream does not have: `hooks`, `host-review`, `local`, `paths`, `panel-handler`) is this project's own.
 
 The files from upstream are covered by its license:
 

@@ -15,7 +15,7 @@ import type { RoleModel } from '../policy.ts'
 import { workerSessionEnvironment } from '../infra/environment.ts'
 import { KV } from '../kv.ts'
 import type { Effects } from './effects.ts'
-import type { Variable } from './execution-environment.ts'
+import { draftsDirectory, type Variable } from './execution-environment.ts'
 import { bundledSkills } from './skill-files.ts'
 import { SKILL_PREFIX, type PromptVersion, type Prompts } from './prompts.ts'
 import { AGENT_SDK, ClaudeSession, type Delivery, type Sdk, type SessionEvents, type SessionLedger, type SessionStart } from './session.ts'
@@ -65,7 +65,8 @@ export interface SessionsHost {
   /** The hooks of `ticket`'s worker. */
   hooks(ticket: Ticket): Partial<Record<HookEvent, HookCallbackMatcher[]>>
   /** How workers' Bash runs: the sandbox, whether Bash is approved outright, and the variables it adds to the environment. */
-  shell(): Pick<Options, 'sandbox'> & { bash: boolean; env: Record<string, string> }
+  /** How a worker's Bash runs; sandboxed, it may also write `writable`. */
+  shell(writable?: readonly string[]): Pick<Options, 'sandbox'> & { bash: boolean; env: Record<string, string> }
   /** The Agent SDK the Sessions call; tests pass a stand-in. */
   readonly sdk?: Sdk
   /** Throws when Claude Code does not list `model` for the credentials in use. */
@@ -169,7 +170,8 @@ export class Sessions {
   ticketOf(sessionId: string): string | undefined { return this.tickets.get(sessionId) }
   /** Deliver to the router once per uuid, restarting its Session first when it is idle and its prompt or options changed. */
   private async toRouter(uuid: string, text: string, delivery: Delivery, authorize?: () => void): Promise<void> {
-    if (this.router.open && !this.router.busy && await this.router.stale()) await this.router.close()
+    // Busy again once its prompt was read (another delivery started a turn meanwhile): that turn goes on, and the restart waits.
+    if (this.router.open && !this.router.busy && await this.router.stale() && !this.router.busy) await this.router.close()
     await this.router.send(uuid, text, delivery, authorize)
   }
   /** Deliver `text` to a Session, the router or a worker, once per `requestId`; `authorize` runs last before it is handed over. */
@@ -239,7 +241,8 @@ export class Sessions {
     const id = workerSessionId(ticket.id)
     this.bind(id, version.revision)
     const model = await this.sessionModel(id, current.execution?.directory ?? '', settings.executor.model)
-    const { bash, env, ...sandbox } = this.host.shell()
+    const directory = current.execution?.directory
+    const { bash, env, ...sandbox } = this.host.shell(directory ? [draftsDirectory(directory, current.execution?.name ?? '')] : [])
     const options: SessionStart['options'] = {
       ...modelOptions(model),
       systemPrompt: { type: 'preset', preset: 'claude_code', append: `[claude-superagent prompt revision ${version.revision}]\n${prompt}` },

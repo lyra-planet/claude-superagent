@@ -11,6 +11,7 @@ const ticket = (overrides: Partial<TerminalTicket> = {}): TerminalTicket => ({ i
   threads: [], held: false, sessionId: 's1', conversation: 'c1', ...overrides } as TerminalTicket)
 function service() {
   let emit: (event: LiveEvent) => void = () => {}
+  let link: (up: boolean) => void = () => {}
   const client = {
     base: 'http://127.0.0.1:3082',
     conversations: vi.fn(async () => ({ conversations: [{ id: 'c1', messages: 2, first: 'Fix the typo', at: '2026-11-02T10:00:00Z' }] })),
@@ -18,13 +19,13 @@ function service() {
       { id: 'm2', from: 'agent', at: '', text: 'On it: fixing [the README](https://github.com/acme/widgets/blob/main/README.md).', agent: true as const, kind: 'acknowledgement' as const }] : [] })),
     ask: vi.fn(async (_text: string, conversation?: string) => ({ conversation: conversation ?? 'c2', trigger_id: 't', received: 'stored' })),
     tickets: vi.fn(async () => ({ tickets: [ticket()] })),
-    follow: vi.fn(async (onEvent: (event: LiveEvent) => void, _signal: AbortSignal, connected: (up: boolean) => void) => { emit = onEvent; connected(true) }),
+    follow: vi.fn(async (onEvent: (event: LiveEvent) => void, _signal: AbortSignal, connected: (up: boolean) => void) => { emit = onEvent; link = connected; connected(true) }),
     call: vi.fn(async () => ({ status: 200, body: { load: { running: 1, queued: 0, maxWorkers: 3 }, paused: false, health: {}, setup: { problem: null } } })),
     ok: vi.fn(async () => ({})),
   }
   const exits: Exit[] = []
   const props: AppProps = { client: client as unknown as AppProps['client'], stateDir: '/srv/state', onExit: exit => { exits.push(exit) } }
-  return { client, props, exits, emit: (event: LiveEvent) => { emit(event) } }
+  return { client, props, exits, emit: (event: LiveEvent) => { emit(event) }, reconnect: () => { link(false); link(true) } }
 }
 let unmount: (() => void) | undefined
 afterEach(() => { unmount?.(); unmount = undefined })
@@ -166,4 +167,35 @@ it('keeps a wrapped line of the ticket list under its own indent', async () => {
   const listed = all().split('\n').slice(all().split('\n').findIndex(line => line.includes('1. a1b2c3')))
   expect(listed[1]).toMatch(/^ {2}/)
   expect(listed.slice(0, 2).join(' ')).toContain('then open a PR · working')
+})
+
+it('catches up after a drop on what the conversation and its tickets got meanwhile, and shows each once', async () => {
+  const s = service()
+  const { app, all } = draw(s.props)
+  await waitUntil(() => all().includes('conversation c1'))
+  // While the service restarted, the agent replied and the ticket waited for review.
+  const reply = { id: 'm3', from: 'agent', at: '', text: 'PR #2 is ready for review.', agent: true as const, kind: 'reply' as const }
+  const before = await s.client.conversation('c1')
+  s.client.conversation.mockResolvedValue({ next: 3, messages: [...before.messages, reply] } as never)
+  s.client.tickets.mockResolvedValue({ tickets: [ticket({ stage: 'person', action: 'review' } as never)] })
+  s.reconnect()
+  await waitUntil(() => app.lastFrame()!.includes('PR #2 is ready for review.') && app.lastFrame()!.includes('awaiting review'))
+  // The same reply arriving live too, and a second drop, show nothing again.
+  s.emit({ type: 'message', conversation: 'c1', message: reply })
+  s.reconnect()
+  await new Promise(resolve => setTimeout(resolve, 50))
+  expect(app.lastFrame()!.split('PR #2 is ready for review.').length - 1).toBe(1)
+  expect(app.lastFrame()!.split('Fix the typo').length - 1).toBe(1)
+})
+
+it('takes a message that was not sent off the list of echoes to drop', async () => {
+  const s = service()
+  s.client.ask.mockRejectedValueOnce(new Error('The service refused it'))
+  const { app, all, type, enter } = draw(s.props)
+  await waitUntil(() => all().includes('conversation c1'))
+  await type('hello'); await enter()
+  await waitUntil(() => app.lastFrame()!.includes('The service refused it'))
+  // Someone else sends the same words in this conversation: they show.
+  s.emit({ type: 'message', conversation: 'c1', message: { id: 'm8', from: 'bob', at: '', text: 'hello' } })
+  await waitUntil(() => app.lastFrame()!.split('hello').length - 1 === 2)
 })

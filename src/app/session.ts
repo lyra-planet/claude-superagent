@@ -87,6 +87,8 @@ export class ClaudeSession {
   private running?: Query
   private loop?: Promise<void>
   private opening?: Promise<void>
+  /** A `close` that runs, which a start waits for. */
+  private closing?: Promise<void>
   private started?: SessionStart
   private state: 'idle' | 'running' | 'requires_action' = 'idle'
   private lastResult?: SDKResultMessage
@@ -121,10 +123,16 @@ export class ClaudeSession {
   /** Whether the Session started with options that differ from what a start would use now. */
   async stale(): Promise<boolean> { return !!this.started && (await this.start()).fingerprint !== this.started.fingerprint }
 
-  /** Start the query unless it runs or starts; resume the Session when it exists. One start runs at a time. */
+  /**
+   * Start the query unless it runs or starts; resume the Session when it exists. One start runs at a time, and one waits for a
+   * `close` that runs, whose query takes nothing more.
+   */
   openSession(): Promise<void> {
-    if (this.running) return Promise.resolve()
-    return this.opening ??= this.begin().finally(() => { this.opening = undefined })
+    if (this.running && !this.closing) return Promise.resolve()
+    return this.opening ??= (async () => {
+      await this.closing
+      if (!this.running) await this.begin()
+    })().finally(() => { this.opening = undefined })
   }
   private async begin(): Promise<void> {
     const start = await this.start()
@@ -152,6 +160,8 @@ export class ClaudeSession {
     // One a step took before, such as just before a restart, counts as taken now: its sender may not have heard.
     if (taken.has(uuid)) { this.events.took?.(this, uuid); return }
     if (this.queued.has(uuid)) return
+    // A message withheld opens no query: a held Session, say, stays closed.
+    authorize?.()
     await this.openSession()
     authorize?.()
     // Opening hands over what the ledger kept, this message too when an earlier send recorded it.
@@ -194,9 +204,12 @@ export class ClaudeSession {
     await this.opening?.catch(() => undefined)
     const running = this.running, loop = this.loop
     if (!running) return
-    this.inbox?.close()
-    running.close()
-    await loop?.catch(() => undefined)
+    this.closing ??= (async () => {
+      this.inbox?.close()
+      running.close()
+      await loop?.catch(() => undefined)
+    })().finally(() => { this.closing = undefined })
+    await this.closing
   }
   /** Resolves once no turn runs and none waits to; at once while none does. */
   whenIdle(): Promise<void> {
@@ -206,10 +219,18 @@ export class ClaudeSession {
   /** The query's handle while it runs, for the controls this class does not wrap. */
   get query(): Query | undefined { return this.running }
 
-  /** Mark the Session as starting a turn a finished task wakes it for, or no longer; one that never starts counts as none. */
+  /**
+   * Mark the Session as starting a turn a finished task wakes it for, or no longer. One that never starts counts as none: the
+   * Session is idle again, as if the turn had ended.
+   */
   private wake(waking: boolean): void {
     clearTimeout(this.waking)
-    this.waking = waking ? setTimeout(() => { this.waking = undefined; this.events.tasks?.(this) }, WAKE_GRACE_MS) : undefined
+    this.waking = waking ? setTimeout(() => {
+      this.waking = undefined
+      if (!this.open || this.working) { this.events.tasks?.(this); return }
+      for (const resolve of this.idleWaiters.splice(0)) resolve()
+      this.events.idle?.(this, undefined)
+    }, WAKE_GRACE_MS) : undefined
     this.waking?.unref?.()
   }
   private push(message: QueuedMessage): void {

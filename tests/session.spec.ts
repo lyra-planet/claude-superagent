@@ -114,9 +114,15 @@ describe('ClaudeSession', () => {
     await flush()
     expect(h.queries[1]!.sent.map(message => message.uuid)).toEqual(['relay', 'note', 'fresh'])
   })
-  it('withholds a message its authorization refuses at the last moment, and records nothing of it', async () => {
+  it('withholds a message its authorization refuses, opening no query for it and recording nothing of it', async () => {
     const h = host()
     await expect(h.session.send('a', 'x', 'next', () => { throw new Error('The ticket ended') })).rejects.toThrow('The ticket ended')
+    await flush()
+    expect(h.queries).toEqual([])
+    expect(h.ledger()).toEqual([])
+    // Refused only once the Session opened, as when the ticket ends meanwhile: nothing goes in either.
+    let calls = 0
+    await expect(h.session.send('b', 'y', 'next', () => { if (++calls > 1) throw new Error('The ticket ended') })).rejects.toThrow('The ticket ended')
     await flush()
     expect(h.queries[0]!.sent).toEqual([])
     expect(h.ledger()).toEqual([])

@@ -152,7 +152,9 @@ export function localHandler(ctx: () => SourceContext, observe?: LocalObserver):
       }
       json(res, 404, { error: 'Unknown terminal route' }); return true
     } catch (error) {
-      json(res, error instanceof z.ZodError ? 400 : 500, { error: error instanceof Error ? error.message : String(error) }); return true
+      // A body the request got wrong (not JSON, too large, or not the shape asked for) is its fault, not the service's.
+      const bad = error instanceof z.ZodError || (error as { status?: unknown } | null)?.status === 400
+      json(res, bad ? 400 : 500, { error: error instanceof Error ? error.message : String(error) }); return true
     }
   }
 }

@@ -1,3 +1,6 @@
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { refusal, workerHooks } from '../src/app/hooks.ts'
 import type { Ticket } from '../src/core/index.ts'
@@ -7,7 +10,33 @@ const ended = { id: 't1', ended: { at: '', by: 'executor', outcome: 'merged' } }
 const bash = (command: string, ticket: Ticket | undefined = live, blocked: string[] = []) => refusal('Bash', { command }, ticket, blocked)
 
 describe('refusal', () => {
+  it('refuses the other ways a worker could merge, delete, signal, post or read credentials', () => {
+    // Adapted: forms the first table missed, found by review.
+    for (const command of ['gh api -X PUT repos/acme/w/pulls/3/merge', 'gh api --method PUT repos/acme/w/pulls/3/merge', 'gh -R acme/w pr merge 3',
+      'gh pr -R acme/w merge 3', 'gh pr --repo=acme/w merge 3']) expect(bash(command), command).toMatch(/never merges/)
+    expect(bash("gh alias set m 'pr merge'"), 'alias').toMatch(/outside a worker/)
+    for (const command of ['gh api --method=DELETE repos/acme/w/git/refs/heads/x', 'gh api -XDELETE repos/acme/w/issues/comments/1',
+      "gh api graphql -f query='mutation { deleteRef(input: {refId: \"x\"}) { clientMutationId } }'", 'gh issue delete 3 --yes', 'gh label delete bug',
+      'git push origin --delete agent/x', 'git push -d origin agent/x', 'git push origin :agent/x']) expect(bash(command), command).toMatch(/delete anything/)
+    for (const command of ['/bin/kill -9 1234', '\\kill -9 1234', 'sleep 1; /usr/bin/pkill node']) expect(bash(command), command).toMatch(/signal processes/)
+    expect(bash('lark-cli api POST /open-apis/im/v1/messages --data x')).toMatch(/post to chats/)
+    expect(refusal('Read', { file_path: '/home/op/.config/gh-agent/hosts.yml' }, live)).toMatch(/Credentials/)
+    expect(refusal('Read', { file_path: '/proc/1234/environ' }, live)).toMatch(/Credentials/)
+    expect(bash('cat /proc/$PPID/environ')).toMatch(/Credentials/)
+    for (const path of [join(homedir(), '.config'), homedir(), '/', '~']) expect(refusal('Grep', { pattern: 'token', path }, live), path).toMatch(/Credentials/)
+    expect(refusal('Grep', { pattern: 'token', path: '.' }, live, [], '/work/repo')).toBeUndefined()
+    // A GraphQL mutation or a body in the file a gh api call sends counts as if it were on the command line.
+    const dir = mkdtempSync(join(tmpdir(), 'hooks-'))
+    writeFileSync(join(dir, 'q.graphql'), 'mutation { mergePullRequest(input: {pullRequestId: "x"}) { clientMutationId } }')
+    writeFileSync(join(dir, 'reply.md'), 'Fixed in abc123.')
+    expect(refusal('Bash', { command: 'gh api graphql -F query=@q.graphql' }, live, [], dir)).toMatch(/never merges/)
+    expect(refusal('Bash', { command: 'gh api repos/acme/w/pulls/3/comments/9/replies --method POST -F body=@reply.md' }, live, [], dir)).toBeUndefined()
+  })
   it('lets ordinary work through', () => {
+    for (const command of ['gh pr create --title "Merge the two configs" --body-file /work/drafts/pr.md', 'gh pr view 3 --json mergeable,mergeStateStatus',
+      'cat docs/kill-switch.md', 'git log --grep=shutdown', 'gh pr list --search "is:merged"', 'git push origin HEAD:refs/heads/agent/x']) {
+      expect(bash(command), command).toBeUndefined()
+    }
     for (const command of ['git commit -m "Fix typo"', 'git push -u origin HEAD', 'gh pr create --fill', 'gh pr view 3 --json state',
       'gh api repos/acme/widgets/pulls/3/comments', 'npm test', 'echo killer feature', 'grep -r skill .']) {
       expect(bash(command), command).toBeUndefined()

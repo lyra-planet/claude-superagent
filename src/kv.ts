@@ -40,7 +40,7 @@ export const KV = {
     /** The model a Session was made with, which it keeps (null: Claude Code's default). */
     model: family<RoleModel | null, [session: string]>('session-model:') },
   /** Executor: the tickets whose worker Session a person holds to work in it directly. */
-  executor: { held: record<string[]>('executor-held') },
+  executor: { held: record<string[]>('executor-held'), preparing: record<string[]>('executor-preparing') },
   /** Per-Source resolved display names mapping a named ID (such as a Feishu chat ID) to its display name. */
   sources: { labels: family<Record<string, string>, [source: string]>('source-labels:') },
   /**

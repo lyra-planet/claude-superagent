@@ -268,3 +268,15 @@ it('does not signal a process that took the recorded service PID, and keeps a st
   expect(await timedOut(dir, true)).toMatch(/did not stop within 5 minutes/)
   expect(stoppedByPerson(dir)).toBe(true)
 }, 30_000)
+
+it('starts nothing in the place of another program that answers on the port, and writes nothing for an init it refuses', async () => {
+  // Adapted: what this host's command adds to upstream's script.
+  const dir = state('state', await answering(READY))
+  rmSync(join(dir, 'orchestrator.sqlite'), { recursive: true })
+  expect(await run('start', '--detach', '--state', dir)).toMatchObject({ code: 1, stderr: expect.stringContaining('Something else answers on port') })
+  const fresh = join(root, 'fresh')
+  const refused = await run('init', '--state', fresh, '--repo', 'acme/widgets', '--gh', 'gh', '--sandbox', 'sometimes')
+  expect(refused).toMatchObject({ code: 1, stderr: expect.stringContaining('executor.sandbox') })
+  expect(existsSync(join(fresh, 'orchestrator.sqlite')) || existsSync(configFile(fresh))).toBe(false)
+  expect(await run('init', '--state', fresh, '--repo', 'acme/widgets', '--gh', 'gh', '--sandbox', 'weak')).toMatchObject({ code: 0 })
+}, 60_000)

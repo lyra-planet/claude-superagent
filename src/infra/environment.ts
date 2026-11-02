@@ -160,13 +160,17 @@ export const CREDENTIAL_NAME = /KEY|PASSWORD|SECRET|TOKEN/
  * credential-shaped; its Bash inherits them unless Claude Code scrubs its subprocesses (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`).
  */
 export const CLAUDE_CREDENTIALS = new Set(['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'AWS_ACCESS_KEY_ID',
-  'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_BEARER_TOKEN_BEDROCK', 'ANTHROPIC_FOUNDRY_API_KEY'])
+  'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_BEARER_TOKEN_BEDROCK', 'ANTHROPIC_FOUNDRY_API_KEY',
+  // The client certificate's key and passphrase of a gateway that asks for mutual TLS.
+  'CLAUDE_CODE_CLIENT_KEY', 'CLAUDE_CODE_CLIENT_KEY_PASSPHRASE'])
+/** Claude Code settings whose names end in TOKENS, such as `CLAUDE_CODE_MAX_OUTPUT_TOKENS`: limits, not credentials. */
+const TOKEN_LIMIT = /^(CLAUDE_CODE_|ANTHROPIC_)?(MAX_|[A-Z_]*_MAX_)\w*TOKENS$/
 /**
  * The environment of a worker Session's Claude Code process: `env` without credential-shaped variables, as upstream's worker
  * commands never see them, but those Claude Code signs in with.
  */
 export const workerSessionEnvironment = (env: Record<string, string | undefined>): Record<string, string | undefined> =>
-  Object.fromEntries(Object.entries(env).filter(([name]) => !CREDENTIAL_NAME.test(name) || CLAUDE_CREDENTIALS.has(name)))
+  Object.fromEntries(Object.entries(env).filter(([name]) => !CREDENTIAL_NAME.test(name) || CLAUDE_CREDENTIALS.has(name) || TOKEN_LIMIT.test(name)))
 /**
  * Runs commands as child processes of the host, with the host's environment minus credential-shaped variables, plus `env`;
  * output beyond 1 MiB (stdout) or 64 KiB (stderr) is cut, and an abort sends SIGTERM, then SIGKILL after two seconds.

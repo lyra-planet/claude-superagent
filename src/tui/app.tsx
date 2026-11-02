@@ -6,6 +6,7 @@
 import { Box, Static, Text, useApp, useInput, useStdout } from 'ink'
 import { useEffect, useRef, useState } from 'react'
 import type { LiveEvent, ServiceClient, TerminalTicket } from '../remote.ts'
+type LiveMessage = Extract<LiveEvent, { type: 'message' }>['message']
 import { COMMANDS, activityEntries, entry, messageEntry, parse, short, stageText, suggestions, ticketEntry, ticketMark, ticketNamed, tilde, type Entry } from './model.ts'
 
 /** What the terminal leaves to its caller: open a worker's Session in Claude Code, or stop the service. */
@@ -41,6 +42,10 @@ export function App({ client, stateDir, resumed, onExit }: AppProps) {
   const marks = useRef(new Map<string, string>())
   /** What the person sent and the service has not echoed yet: printed when sent, so its echo is not printed again. */
   const sent = useRef<string[]>([])
+  /** The ids of the messages shown, so a message the catch-up after a reconnect reads again is not shown twice. */
+  const shown = useRef(new Set<string>())
+  /** Whether the live events were up once: a later connection catches up on what the drop missed. */
+  const connectedOnce = useRef(false)
   const print = (...items: Entry[]) => { setEntries(before => [...before, ...items]) }
   const fail = (error: unknown) => { print(entry('error', error instanceof Error ? error.message : String(error))) }
   const leave = (how: Exit) => { onExit(how, current.current.conversation); exit() }
@@ -58,10 +63,15 @@ export function App({ client, stateDir, resumed, onExit }: AppProps) {
       if (!latest) { print(header, entry('info', 'Type a request for the agent, or /help.')); return }
       const { messages } = await client.conversation(latest.id)
       setConversation(latest.id)
+      for (const message of messages) shown.current.add(message.id)
       print(header, entry('info', `Conversation ${latest.id} (${latest.messages} messages); /new starts another, /threads lists them.`),
         ...messages.slice(-12).map(messageEntry))
     })().catch(fail)
-    void client.follow(event => { onEvent(event) }, stop.signal, connected => { setStatus(before => ({ ...before, connected })) })
+    void client.follow(event => { onEvent(event) }, stop.signal, connected => {
+      setStatus(before => ({ ...before, connected }))
+      if (connected && connectedOnce.current) void catchUp().catch(fail)
+      if (connected) connectedOnce.current = true
+    })
     const poll = async () => {
       const { body } = await client.call('GET', '/orchestrator/api/state').catch(() => ({ body: undefined }))
       if (!body?.load) return
@@ -73,23 +83,43 @@ export function App({ client, stateDir, resumed, onExit }: AppProps) {
     return () => { stop.abort(); clearInterval(timer) }
   }, [])
 
+  /** A message of the current conversation, once: not the echo of what the person sent, nor one shown already. */
+  function showMessage(message: LiveMessage): void {
+    if (shown.current.has(message.id)) return
+    shown.current.add(message.id)
+    const echo = !message.agent ? sent.current.indexOf(message.text) : -1
+    if (echo >= 0) { sent.current.splice(echo, 1); return }
+    print(messageEntry(message))
+  }
+  /** A ticket's line, when what it shows changed. */
+  function showTicket(ticket: TerminalTicket): void {
+    const here = current.current.conversation
+    const mark = ticketMark(ticket)
+    if (marks.current.get(ticket.id) === mark) return
+    marks.current.set(ticket.id, mark)
+    if (!here || ticket.conversation === here) print(ticketEntry(ticket))
+  }
+  /** After a drop, such as while the service restarted: what the current conversation and the tickets got meanwhile. */
+  async function catchUp(): Promise<void> {
+    const here = current.current.conversation
+    if (here) for (const message of (await client.conversation(here)).messages.slice(-50)) showMessage(message)
+    const { tickets: fresh } = await client.tickets()
+    setTickets(fresh)
+    for (const ticket of fresh) showTicket(ticket)
+  }
   /** What a live event shows: messages of the current conversation, its tickets' changes, what their workers do. */
   function onEvent(event: LiveEvent): void {
     const { conversation: here, tickets: known, activity: showing } = current.current
     if (event.type === 'message') {
-      const echo = !event.message.agent ? sent.current.indexOf(event.message.text) : -1
-      if (echo >= 0) { sent.current.splice(echo, 1); return }
-      if (event.conversation === here) print(messageEntry(event.message))
+      // Before the first reply names a new conversation, the echo of what the person sent is its only message to take.
+      if (event.conversation === here || (!here && !event.message.agent && sent.current.includes(event.message.text))) showMessage(event.message)
       else if (event.message.agent) print(entry('info', `A reply in conversation ${event.conversation}: /thread ${event.conversation} to read it.`))
       return
     }
     if (event.type === 'ticket') {
       const ticket = event.ticket
       setTickets(before => [ticket, ...before.filter(item => item.id !== ticket.id)])
-      const mark = ticketMark(ticket)
-      if (marks.current.get(ticket.id) === mark) return
-      marks.current.set(ticket.id, mark)
-      if (!here || ticket.conversation === here) print(ticketEntry(ticket))
+      showTicket(ticket)
       return
     }
     const ticket = known.find(item => item.id === event.ticketId)
@@ -103,7 +133,13 @@ export function App({ client, stateDir, resumed, onExit }: AppProps) {
       print(entry('person', command.text))
       sent.current.push(command.text)
       setBusy('handing it to the agent')
-      try { const asked = await client.ask(command.text, conversation); setConversation(asked.conversation) } catch (error) { fail(error) } finally { setBusy(undefined) }
+      try { const asked = await client.ask(command.text, conversation); setConversation(asked.conversation) }
+      catch (error) {
+        // Not sent: no echo comes for it.
+        const at = sent.current.lastIndexOf(command.text)
+        if (at >= 0) sent.current.splice(at, 1)
+        fail(error)
+      } finally { setBusy(undefined) }
       return
     }
     if (command.kind === 'unknown') { print(entry('error', `${command.text} is not a command; /help lists them.`)); return }
@@ -129,6 +165,7 @@ export function App({ client, stateDir, resumed, onExit }: AppProps) {
         const { messages } = await client.conversation(id).catch(error => { fail(error); return { messages: undefined } })
         if (!messages) return
         setConversation(id)
+        for (const message of messages) shown.current.add(message.id)
         print(entry('info', `Conversation ${id}`), ...messages.slice(-12).map(messageEntry))
         return
       }

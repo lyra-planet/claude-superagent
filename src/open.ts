@@ -53,12 +53,15 @@ export function runClaude(held: Held, fork: boolean): Promise<number> {
     cwd: existsSync(held.cwd) ? held.cwd : undefined, stdio: 'inherit',
     env: { ...inherited, ...env, PATH: path, CLAUDE_CONFIG_DIR: held.claudeConfigDir },
   })
-  // Claude Code handles Ctrl-C itself while it runs.
+  // Claude Code handles Ctrl-C itself while it runs; a closed terminal or a stop ends it too, and this process lives on until
+  // then, to hand the Session back.
   const ignore = () => {}
-  process.on('SIGINT', ignore)
+  const signals = ['SIGINT', 'SIGHUP', 'SIGTERM'] as const
+  for (const signal of signals) process.on(signal, ignore)
+  const done = () => { for (const signal of signals) process.off(signal, ignore) }
   return new Promise((resolve, reject) => {
-    child.once('error', error => { process.off('SIGINT', ignore); reject(error) })
-    child.once('exit', code => { process.off('SIGINT', ignore); resolve(code ?? 1) })
+    child.once('error', error => { done(); reject(error) })
+    child.once('exit', code => { done(); resolve(code ?? 1) })
   })
 }
 /**

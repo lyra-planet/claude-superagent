@@ -60,7 +60,7 @@ The executor (`src/executor/claude.ts`) sends an Assignment with `later` and eac
 
 | Setting | Bash |
 |---|---|
-| `on` | Claude Code's sandbox: writes to the ticket directory, the state directory and the clone's git directory (Claude Code allows a worktree's own); network to GitHub (`github.com`, `*.github.com`, `*.githubusercontent.com`) and `networkDomains`; the Claude Code credentials file unreadable |
+| `on` | Claude Code's sandbox: writes to the ticket directory, its drafts directory and the clone's git directory (Claude Code allows a worktree's own, but not its configuration or hooks), nothing else of the state directory; network to GitHub (`github.com`, `*.github.com`, `*.githubusercontent.com`) and `networkDomains`; the Claude Code credentials file unreadable |
 | `weak` | the same, with `enableWeakerNestedSandbox`, for containers where bubblewrap cannot mount `/proc`: other processes' `/proc` is visible |
 | `off` | runs as the service's OS user, approved outright |
 

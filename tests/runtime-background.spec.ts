@@ -175,7 +175,8 @@ describe('a worker whose work runs in the background', () => {
     h.runtime.store.tickets.save(stored)
     const gate = deferred(), stopTask = query.stopTask.getMockImplementation()!
     query.stopTask.mockImplementationOnce(async id => { await gate.promise; await stopTask(id) })
-    const reports = () => h.relays(h.runtime.masterId).filter(item => item.kind === 'worker_report').length
+    // Distinct reports: the router's untaken ones go in again when the restarted service opens it.
+    const reports = () => new Set(h.claude.to(h.runtime.masterId).filter(message => message.text.includes('"kind":"worker_report"')).map(message => message.uuid)).size
     const reported = reports()
     // The delivery waits for the stop.
     const restarting = restart()

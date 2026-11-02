@@ -116,8 +116,10 @@ export class ClaudeExecutor implements Executor {
       this.track(ticket.id, (async () => {
         session.forget(session.pendingIds())
         for (const task of session.background) await session.stopTask(task.id)
-        // A worker that ends its own turn finishes it, and its query closes once idle (`workerIdle`).
-        if (!ownTurn) { await session.interrupt(); await session.close() }
+        // A worker that ends its own turn finishes it, and its query closes once idle (`workerIdle`); one idle already, such
+        // as with jobs it left to a person, closes now.
+        if (!ownTurn) await session.interrupt()
+        if (!ownTurn || !session.working) await session.close()
         this.host.logger.info('claude-superagent: stopped the worker of %s (%s)', ticket.id.slice(0, 12), reason)
       })())
     })
@@ -148,20 +150,26 @@ export class ClaudeExecutor implements Executor {
     await session.close()
     return { stopped }
   }
-  /** The person is done in the Session: their turns there are their work, and what waited for the worker reaches it now. */
-  release(ticketId: string): void {
+  /**
+   * The person is done in the Session: their turns there are their work (`worked`, unless they left before it was theirs), and
+   * what waited for the worker reaches it now.
+   */
+  release(ticketId: string, worked = true): void {
     if (!this.held(ticketId)) return
     this.setHeld(ticketId, false)
-    this.personWorked(ticketId)
+    if (worked) this.personWorked(ticketId)
     const ticket = this.current(ticketId)
     const running = ticket && liveTicket(ticket) ? runningAssignment(ticket) : undefined
     if (ticket && running && ticket.undelivered.length) this.deliver(ticket, running)
   }
   /** Whether a person holds the worker's Session (`hold`). */
-  held(ticketId: string): boolean { return (this.host.store.get(KV.executor.held) ?? []).includes(ticketId) }
-  private setHeld(ticketId: string, held: boolean): void {
-    const others = (this.host.store.get(KV.executor.held) ?? []).filter(id => id !== ticketId)
-    this.host.store.set(KV.executor.held, held ? [...others, ticketId] : others)
+  held(ticketId: string): boolean { return this.marked(KV.executor.held, ticketId) }
+  private setHeld(ticketId: string, held: boolean): void { this.mark(KV.executor.held, ticketId, held) }
+  /** Ticket ids kept in the database, such as those held or whose directory is being prepared. */
+  private marked(list: typeof KV.executor.held, ticketId: string): boolean { return (this.host.store.get(list) ?? []).includes(ticketId) }
+  private mark(list: typeof KV.executor.held, ticketId: string, on: boolean): void {
+    const others = (this.host.store.get(list) ?? []).filter(id => id !== ticketId)
+    this.host.store.set(list, on ? [...others, ticketId] : others)
   }
 
   /** Whether a ticket's worker holds a slot: its turn runs or waits to, or a look at its background work runs. */
@@ -219,14 +227,22 @@ export class ClaudeExecutor implements Executor {
     const current = () => {
       if (this.host.closing()) throw new Error('claude-superagent is stopping')
       if (this.host.paused()) throw new Later('Processing is paused')
+      if (this.held(ticket.id)) throw new Later('A person works in the worker\'s Session')
       const stored = this.current(ticket.id)
       return !!stored && liveTicket(stored) && latestAssignment(stored)?.id === assignment.id
     }
     const workspace = ticket.execution?.directory ?? ''
     if (!current()) return
-    // An existing directory counts as prepared.
-    if (!await stat(workspace).then(() => true, () => false)) {
+    // An existing directory counts as prepared, unless its prepare command or check was cut short, as by a stop: what it left
+    // may be half made, with its check not run.
+    const exists = await stat(workspace).then(() => true, () => false)
+    if (exists && this.marked(KV.executor.preparing, ticket.id)) {
+      throw new PrepareFailed(`The prepare command for ${workspace} was cut short, so the directory may be incomplete: remove it, and what the command made beside it (such as a git worktree's branch), then retry the ticket.`)
+    }
+    if (!exists) {
+      this.mark(KV.executor.preparing, ticket.id, true)
       await this.prepareDirectory(ticket)
+      this.mark(KV.executor.preparing, ticket.id, false)
       if (!current()) return
     }
     const session = this.session(ticket)
@@ -343,6 +359,8 @@ export class ClaudeExecutor implements Executor {
       return
     }
     if (!idle || !assignment || this.host.closing() || this.resuming.has(assignment.id)) return
+    // A person took the Session (`hold`, `now` cutting the turn short): the turn ended, as the person's work begins.
+    if (this.held(ticketId)) { this.host.engine.turnEnded(ticketId, assignment.id); return }
     if (result && (result.subtype !== 'success' || result.is_error)) {
       const error = new Error(('errors' in result && result.errors?.join('; ')) || ('result' in result && result.result) || result.subtype || 'The worker turn failed')
       if (this.retries(assignment.id, error)) { this.resumeAfter(ticketId, assignment.id, error); return }
@@ -382,7 +400,8 @@ export class ClaudeExecutor implements Executor {
       for (const job of jobs) await session.stopTask(job.id)
       const names = jobs.map(named).join(', ')
       if (jobs.length) await this.host.sessions.prompt(session, `killed:${jobs.map(job => job.id).join(',')}`,
-        `Your background jobs ran ${minutes} minutes after your turn ended and were stopped: ${names}.`, 'inject')
+        `Your background jobs ran ${minutes} minutes after your turn ended and were stopped: ${names}.`, 'inject',
+        () => { if (!live() || this.held(ticketId)) throw new Later('The Assignment ended or a person holds the Session') })
       stopped = jobs.length ? `Background jobs ran ${minutes} minutes after the worker's turn ended and were stopped: ${names}.`
         : `Subagents still ran ${minutes} minutes after the worker's turn ended.`
     }
@@ -488,9 +507,18 @@ export class ClaudeExecutor implements Executor {
         if (!(failure instanceof Later)) throw failure
         this.after(SLOT_WAIT_MS, go); return
       }
-      const sent = this.host.sessions.prompt(this.session(ticket), `retry:${assignmentId}:${tries}`, text, 'later')
-      void this.background(sent.finally(() => { if (waking) this.slots.free(ticketId); this.resuming.delete(assignmentId) })
-        .catch(failure => { this.failed(ticketId, String(failure)) }))
+      // Each failure's retry is a message of its own: the count starts again after a turn that ends well, and across a restart.
+      const sent = this.host.sessions.prompt(this.session(ticket), `retry:${assignmentId}:${tries}:${Date.now().toString(36)}`, text, 'later', () => {
+        const stored = this.current(ticketId)
+        if (!stored || !liveTicket(stored) || runningAssignment(stored)?.id !== assignmentId) throw new Later('The Assignment ended')
+        if (this.held(ticketId)) throw new Later('A person works in the worker\'s Session')
+      })
+      void this.background(sent.then(() => { this.resuming.delete(assignmentId) }, failure => {
+        // Withheld: a person took the Session meanwhile, and the worker goes on after them; or the Assignment ended.
+        if (failure instanceof Later && this.held(ticketId)) { this.after(SLOT_WAIT_MS, go); return }
+        this.resuming.delete(assignmentId)
+        if (!(failure instanceof Later)) this.failed(ticketId, String(failure))
+      }).finally(() => { if (waking) this.slots.free(ticketId) }))
     }
     this.after(TRANSIENT_BACKOFF_MS * 2 ** (tries - 1), go)
   }

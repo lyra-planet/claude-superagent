@@ -134,7 +134,7 @@ The Execution setting `sandbox` decides how workers' Bash runs (`Runtime.shell` 
 
 | Setting | Bash |
 | --- | --- |
-| `on` (default) | In Claude Code's sandbox, which on Linux needs `bubblewrap` and `socat`. Writes reach the Ticket directory, the state directory, the command's own temporary directory and, for a worktree, its clone's git directory, which Claude Code allows; the network reaches GitHub (`github.com`, `*.github.com`, `*.githubusercontent.com`) and the domains in `networkDomains` (Execution → other domains the sandbox reaches), nothing else; the Claude Code credentials file (`<claudeConfigDir>/.credentials.json`, and `CLAUDE_SECURESTORAGE_CONFIG_DIR` when set) cannot be read. Sandboxed commands are approved outright and unsandboxed ones are refused. Nothing runs unsandboxed: a missing dependency keeps the worker's query from starting (`failIfUnavailable`), and a sandbox that cannot run fails each command |
+| `on` (default) | In Claude Code's sandbox, which on Linux needs `bubblewrap` and `socat`. Writes reach the Ticket directory, its drafts directory, the command's own temporary directory and, for a worktree, its clone's git directory, which Claude Code allows except its configuration and hooks; nothing else of the state directory, whose database, configuration and shims the host reads from outside the sandbox; the network reaches GitHub (`github.com`, `*.github.com`, `*.githubusercontent.com`) and the domains in `networkDomains` (Execution → other domains the sandbox reaches), nothing else; the Claude Code credentials file (`<claudeConfigDir>/.credentials.json`, and `CLAUDE_SECURESTORAGE_CONFIG_DIR` when set) cannot be read. Sandboxed commands are approved outright and unsandboxed ones are refused. Nothing runs unsandboxed: a missing dependency keeps the worker's query from starting (`failIfUnavailable`), and a sandbox that cannot run fails each command |
 | `weak` | The same, with `enableWeakerNestedSandbox`, for containers where bubblewrap cannot mount `/proc`. Files and network stay in; other processes' `/proc` does not: a command sees the machine's processes |
 | `off` | As the service's OS user, approved outright |
 
@@ -159,15 +159,16 @@ The git configuration setup writes (`<stateDir>/worker-gitconfig`) replaces the 
 
 Upstream states these rules in prompt text and command shims only. Here one `PreToolUse` hook on every worker (`src/app/hooks.ts`) denies, with a reason the worker reads, in every sandbox mode:
 
-- merging or enabling auto-merge as the agent account: `gh pr merge`, and the GraphQL `mergePullRequest` and `enablePullRequestAutoMerge` mutations;
-- GitHub operations outside a worker's work: `gh repo delete|archive|edit|rename`, `gh secret`, `variable`, `ssh-key`, `gpg-key`, `org`, `ruleset`, `release delete`, `cache delete`, `gh auth`, and `gh api -X DELETE`;
-- reading credential files (`.credentials.json`, `/secrets/`, `gh_token`, `.config/gh`, `.ssh/id_*`, `.git-credentials`), by shell or by file tool;
-- posting to a chat directly with `lark-cli`: replies go through `orchestrator_reply`;
-- signalling processes: `kill`, `pkill`, `killall`, `reboot`, `shutdown`, `halt`, `poweroff`;
+- merging or enabling auto-merge as the agent account: `gh pr merge` (also with global flags, as `gh -R owner/name pr merge`), the REST `pulls/<n>/merge`, and the GraphQL `mergePullRequest` and `enablePullRequestAutoMerge` mutations;
+- GitHub operations outside a worker's work: `gh repo delete|archive|edit|rename`, `gh secret`, `variable`, `ssh-key`, `gpg-key`, `org`, `ruleset`, `alias`, `extension`, `release delete`, `cache delete`, `gh auth`;
+- deleting anything on GitHub: any `gh <command> delete`, `gh api` with the `DELETE` method in any spelling, GraphQL `delete…` mutations, and `git push --delete` or `:branch`;
+- reading credentials (`.credentials.json`, `/secrets/`, `gh_token`, `.config/gh*`, `hosts.yml`, `.ssh/id_*`, `.git-credentials`, a process's `environ`), by shell or by file tool, and a Grep or Glob from the home directory, its `.config` or `.ssh`, or above them;
+- posting to a chat directly with `lark-cli`, by its message commands or its raw API: replies go through `orchestrator_reply`;
+- signalling processes: `kill`, `pkill`, `killall`, `reboot`, `shutdown`, `halt`, `poweroff`, by name or path;
 - the commands the panel blocks, by name or path;
 - any tool call once the Ticket has ended.
 
-The hook reads the Ticket and the blocked commands at each call, so a change applies at once. A command line that builds a name another way gets past these checks, so neither the hook nor the sandbox is a boundary against a determined program. Run the service as an OS user that holds only the agent's credentials, and know that a worker's Claude Code process keeps the credentials Claude Code signs in with: its Bash inherits them unless Claude Code scrubs its subprocesses' environment (see Claude Code credentials in 006 Deployment). Whether Claude Code applies the hook to a worker's subagents has not been probed.
+A `gh api` call's files (`-F name=@file`, `--input file`) are read and checked as if they were on the command line, so a mutation in a file the worker wrote counts. The hook reads the Ticket and the blocked commands at each call, so a change applies at once. A command line that builds a name another way gets past these checks, so neither the hook nor the sandbox is a boundary against a determined program. Run the service as an OS user that holds only the agent's credentials, and know that a worker's Claude Code process keeps the credentials Claude Code signs in with: its Bash inherits them unless Claude Code scrubs its subprocesses' environment (see Claude Code credentials in 006 Deployment). Whether Claude Code applies the hook to a worker's subagents has not been probed.
 
 ### Where Claude Code differs from DeepSeek Harness
 

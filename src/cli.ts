@@ -3,9 +3,10 @@
  * it, hand it work, and open a worker's Session in Claude Code. Without a command, in a terminal, it opens the interactive
  * terminal. `--state <dir>` (or `CLAUDE_SUPERAGENT_STATE`) names the state directory, `~/.claude-superagent` by default.
  */
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { StringDecoder } from 'node:string_decoder'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { ConfigSchema, configFile, machineOf, type DeploymentConfig } from './deployment.ts'
@@ -64,6 +65,11 @@ function prepareCommand(clone: string): string {
   return [`git -C ${quoted} fetch --no-tags "https://github.com/$DSH_SUPERAGENT_GITHUB_REPOSITORY.git" "\${DSH_SUPERAGENT_GITHUB_PR_HEAD:-HEAD}:refs/superagent/$DSH_SUPERAGENT_TICKET"`,
     `git -C ${quoted} worktree add -b "agent/$DSH_SUPERAGENT_NAME" "$DSH_SUPERAGENT_DIR" "refs/superagent/$DSH_SUPERAGENT_TICKET"`].join(' &&\n')
 }
+/** A parsed flag value, or the end of the command with what is wrong with it. */
+function valid<T>(parsed: { success: true; data: T } | { success: false; error: { issues: { path: PropertyKey[]; message: string }[] } }): T {
+  if (parsed.success) return parsed.data
+  return fail(`init: ${parsed.error.issues.map(issue => `${issue.path.map(String).join('.') || 'value'}: ${issue.message}`).join('; ')}`)
+}
 function init(): void {
   if (existsSync(join(stateDir, 'orchestrator.sqlite'))) fail(`${stateDir} is set up already; change its settings in the panel`)
   const repository = flags.repo ?? fail('init needs --repo <owner/name>')
@@ -71,19 +77,19 @@ function init(): void {
   const clone = flags.clone ? resolve(flags.clone) : undefined
   if (clone && !existsSync(join(clone, '.git'))) fail(`${clone} is not a git clone`)
   const operator = flags.operator ?? 'operator'
-  const config = ConfigSchema.parse({ port: flags.port ? Number(flags.port) : undefined, allowedHosts: flags['allow-host'] })
+  // Everything is checked before anything is written: a wrong flag leaves no half set-up directory that a second init refuses.
+  const config = valid(ConfigSchema.safeParse({ port: flags.port ? Number(flags.port) : undefined, allowedHosts: flags['allow-host'] }))
+  const settings = valid(SettingsSchema.safeParse({
+    // A Source the settings leave out counts as on, so Feishu, which needs a bot set up first, is written off.
+    sources: { github: { enabled: true, config: { repository, cli } }, local: { enabled: true, config: { operator } }, feishu: { enabled: false } },
+    policy: { sources: { local: { allowed: [{ id: operator }] }, github: { allowed: [] } } },
+    eval: { mode: flags.mode ?? 'observe' },
+    executor: { sandbox: flags.sandbox ?? 'on', ...clone ? { prepare: prepareCommand(clone) } : {} },
+  }))
   mkdirSync(stateDir, { recursive: true, mode: 0o700 })
   writeFileSync(configFile(stateDir), `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 })
   const store = new Store(join(stateDir, 'orchestrator.sqlite'))
-  try {
-    store.saveSettings(SettingsSchema.parse({
-      // A Source the settings leave out counts as on, so Feishu, which needs a bot set up first, is written off.
-      sources: { github: { enabled: true, config: { repository, cli } }, local: { enabled: true, config: { operator } }, feishu: { enabled: false } },
-      policy: { sources: { local: { allowed: [{ id: operator }] }, github: { allowed: [] } } },
-      eval: { mode: flags.mode ?? 'observe' },
-      executor: { sandbox: flags.sandbox ?? 'on', ...clone ? { prepare: prepareCommand(clone) } : {} },
-    }), { source: 'internal', policyVersion: '', policyChanged: false, notified: [] })
-  } finally { store.close() }
+  try { store.saveSettings(settings, { source: 'internal', policyVersion: '', policyChanged: false, notified: [] }) } finally { store.close() }
   say(`Set up ${stateDir}
   repository  ${repository}, as the account ${cli} signs in to
   terminal    requests from "${operator}" become tickets
@@ -95,6 +101,8 @@ async function start(): Promise<void> {
   const config = readConfig()
   const running = runningPid(stateDir)
   if (running !== undefined) fail(`claude-superagent runs already on ${stateDir} (pid ${running})`)
+  // Another program, or the service of another state directory, would answer in its place.
+  if (await service().running()) fail(`Something else answers on port ${config.port}: change the port in ${configFile(stateDir)}, or stop what runs there`)
   if (flags.detach) {
     const { pid, log } = await startDetached(stateDir, foreground(), () => service().running()).catch((error: unknown) => fail(String(error instanceof Error ? error.message : error)))
     say(`claude-superagent runs in the background (pid ${pid}); panel at http://127.0.0.1:${config.port}/; log ${log}`)
@@ -156,16 +164,22 @@ async function check(): Promise<number> {
 }
 async function logs(): Promise<void> {
   const log = latestLog(stateDir) ?? fail(`No log yet in ${join(stateDir, 'logs')}: the service logs there when it runs with --detach`)
+  // Bytes read so far; the decoder holds a character the last read cut in two.
   let offset = 0
+  const decoder = new StringDecoder('utf8')
   const print = () => {
-    const text = readFileSync(log, 'utf8')
-    process.stdout.write(text.slice(offset)); offset = text.length
+    const size = statSync(log).size
+    if (size <= offset) return
+    const buffer = Buffer.alloc(size - offset), fd = openSync(log, 'r')
+    try { readSync(fd, buffer, 0, buffer.length, offset) } finally { closeSync(fd) }
+    offset = size
+    process.stdout.write(decoder.write(buffer))
   }
   print()
   if (!flags.follow) return
   for (;;) {
     await new Promise(resolve => setTimeout(resolve, 500))
-    if (statSync(log).size !== offset) print()
+    print()
   }
 }
 

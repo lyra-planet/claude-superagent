@@ -239,4 +239,8 @@ describe('the host\'s subprocess runtime', () => {
 it('keeps credential-shaped variables out of a worker Session but those Claude Code signs in with', () => {
   expect(workerSessionEnvironment({ PATH: '/bin', GITHUB_TOKEN: 'a', DB_PASSWORD: 'b', MY_API_KEY: 'c', ANTHROPIC_API_KEY: 'd', CLAUDE_CODE_OAUTH_TOKEN: 'e',
     AWS_SECRET_ACCESS_KEY: 'f', HTTPS_PROXY: 'g' })).toEqual({ PATH: '/bin', ANTHROPIC_API_KEY: 'd', CLAUDE_CODE_OAUTH_TOKEN: 'e', AWS_SECRET_ACCESS_KEY: 'f', HTTPS_PROXY: 'g' })
+  // Adapted: the key of a mutual-TLS gateway's client certificate, and Claude Code's token limits, which are no credentials.
+  expect(workerSessionEnvironment({ CLAUDE_CODE_CLIENT_KEY: 'k', CLAUDE_CODE_CLIENT_KEY_PASSPHRASE: 'p', MAX_THINKING_TOKENS: '8000',
+    CLAUDE_CODE_MAX_OUTPUT_TOKENS: '32000', NPM_TOKEN: 'n' })).toEqual({ CLAUDE_CODE_CLIENT_KEY: 'k', CLAUDE_CODE_CLIENT_KEY_PASSPHRASE: 'p',
+    MAX_THINKING_TOKENS: '8000', CLAUDE_CODE_MAX_OUTPUT_TOKENS: '32000' })
 })

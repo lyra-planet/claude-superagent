@@ -7,13 +7,17 @@ import { feishu, MEMBER, startRuntime, type Host } from './fixtures/host.ts'
 let h: Host
 beforeEach(async () => { h = await startRuntime() })
 afterEach(async () => { await h.stop() })
-/** A request to the terminal's routes, as the terminal makes it. */
-async function local(method: string, path: string, json?: unknown) {
+/** A request to the terminal's routes, as the terminal makes it; `leave` closes its connection before the answer, as a person who quits does. */
+async function local(method: string, path: string, json?: unknown, leave?: Promise<void>) {
   let status = 0, text = ''
   const chunks = json === undefined ? [] : [Buffer.from(JSON.stringify(json))]
   const req = { method, url: path, headers: { host: '127.0.0.1:3082', 'x-orchestrator-request': '1' }, on: () => {}, async *[Symbol.asyncIterator]() { yield* chunks } }
-  await h.runtime.handle(req as never, { writeHead: (code: number) => { status = code }, end: (data: string) => { text = data }, write: () => true, headersSent: false } as never)
-  return { status, body: JSON.parse(text) as Record<string, any> }
+  const closed = new Set<() => void>()
+  const res = { writeHead: (code: number) => { status = code }, end: (data: string) => { text = data; res.writableFinished = true }, write: () => true, headersSent: false,
+    writableFinished: false, destroyed: false, on: (_event: string, listener: () => void) => { closed.add(listener) }, off: (_event: string, listener: () => void) => { closed.delete(listener) } }
+  void leave?.then(() => { res.destroyed = true; for (const listener of closed) listener() })
+  await h.runtime.handle(req as never, res as never)
+  return { status, body: (text ? JSON.parse(text) : undefined) as Record<string, any> }
 }
 function listen() {
   const events: LiveEvent[] = []
@@ -78,6 +82,48 @@ it('cuts the worker\'s turn short when the person asks for the Session now', asy
   await local('POST', `/local/tickets/${one.ticket.id}/hold`, { now: true })
   expect(query.interrupt).toHaveBeenCalled()
   expect(worker.query).toBeUndefined()
+})
+
+it('opens no event stream while the service stops, and answers a body that is not JSON with a 400', async () => {
+  const req = { method: 'POST', url: '/local/messages', headers: { host: '127.0.0.1:3082', 'x-orchestrator-request': '1' }, on: () => {},
+    async *[Symbol.asyncIterator]() { yield Buffer.from('{"text": ') } }
+  let status = 0
+  await h.runtime.handle(req as never, { writeHead: (code: number) => { status = code }, end: () => {}, write: () => true, headersSent: false } as never)
+  expect(status).toBe(400)
+  const stopping = h.runtime.stop()
+  expect((await local('GET', '/local/events')).status).toBe(503)
+  await stopping
+  h.stop = async () => {}
+})
+
+it('gives the Session back to the worker when the person leaves before their hold was granted', async () => {
+  const one = await h.acceptedTicket(feishu('1', '@bot 修一'))
+  const worker = h.claude.session(one.sessionId)
+  await waitUntil(() => worker.status === 'running')
+  let quit!: () => void
+  const held = local('POST', `/local/tickets/${one.ticket.id}/hold`, {}, new Promise<void>(resolve => { quit = resolve }))
+  await new Promise(resolve => setTimeout(resolve, 20))
+  expect(h.runtime.executor.held(one.ticket.id)).toBe(true)
+  // Ctrl-C while the worker's turn runs: no one would hand the Session back.
+  quit()
+  worker.end({ result: 'Working on it.' })
+  expect((await held).body).toBeUndefined()
+  expect(h.runtime.executor.held(one.ticket.id)).toBe(false)
+  // What reaches the worker goes on reaching it.
+  h.runtime.receive(feishu('2', '一的补充', { mentions: [], root_id: 'om_1', sender_id: MEMBER }))
+  await h.runtime.idle()
+  await waitUntil(() => h.claude.to(one.sessionId).some(message => message.text.includes('一的补充')))
+})
+
+it('ends the worker\'s turn without a failure when the person cuts it short for the Session', async () => {
+  const one = await h.acceptedTicket(feishu('1', '@bot 修一'))
+  const worker = h.claude.session(one.sessionId)
+  await waitUntil(() => worker.status === 'running')
+  // Claude Code ends the interrupted turn with an error result (as the stand-in does).
+  await local('POST', `/local/tickets/${one.ticket.id}/hold`, { now: true })
+  await h.runtime.idle()
+  expect(h.ticket(one.ticket.id).assignments.at(-1)?.report?.state).not.toBe('failed')
+  expect(h.ticket(one.ticket.id).ended).toBeUndefined()
 })
 
 it('streams each committed change of a ticket, such as its worker\'s report', async () => {

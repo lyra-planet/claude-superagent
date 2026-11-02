@@ -155,7 +155,7 @@ export class Runtime implements SourceHost {
         variables: ticket => setup.configured() ? (ticket ? this.ticketEnvironment(ticket) : deployed()) : undefined,
         tools: ticket => ticket ? executorTools(this.toolHost, ticket) : mainTools(this.toolHost, masterId),
         hooks: ticket => workerHooks(ticket.id, { ticket: id => store.tickets.get(id), blocked: () => store.settings().executor.blockedCommands }),
-        shell: () => this.shell(), sdk: this.sdk, checkModel: model => this.checkModel(model), activity: (sessionId, message) => {
+        shell: writable => this.shell(writable), sdk: this.sdk, checkModel: model => this.checkModel(model), activity: (sessionId, message) => {
           const lines = activityOf(message)
           if (lines.length) this.bus.emit('event', { type: 'activity', ...this.sessions.ticketOf(sessionId) ? { ticketId: this.sessions.ticketOf(sessionId) } : {}, lines })
         } })
@@ -255,16 +255,18 @@ export class Runtime implements SourceHost {
   /**
    * How workers' Bash runs. The sandbox follows the Execution settings: `on`, `weak` for containers that cannot mount /proc, or
    * `off` with Bash approved outright; sandboxed Bash reaches GitHub, for git and gh, and the settings' other domains, nothing else.
-   * git gets the agent's identity, and sandboxed the placeholders to ignore, through the environment (`workerGitVariables`).
+   * It writes the worker's directory and `writable` (its drafts), nothing else of the state directory, whose database,
+   * configuration and shims the host runs from outside the sandbox. git gets the agent's identity, and sandboxed the placeholders to ignore,
+   * through the environment (`workerGitVariables`).
    */
-  private shell(): { sandbox?: import('@anthropic-ai/claude-agent-sdk').Options['sandbox']; bash: boolean; env: Record<string, string> } {
+  private shell(writable: readonly string[] = []): { sandbox?: import('@anthropic-ai/claude-agent-sdk').Options['sandbox']; bash: boolean; env: Record<string, string> } {
     const { sandbox: mode, networkDomains } = this.store.settings().executor
     const env = workerGitVariables(this.machine.stateDir, this.setup.deployment?.github, mode !== 'off')
     if (mode === 'off') return { bash: true, env }
     return { bash: false, env, sandbox: { enabled: true, failIfUnavailable: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false,
       ...mode === 'weak' ? { enableWeakerNestedSandbox: true } : {},
       network: { allowedDomains: [...GITHUB_DOMAINS, ...networkDomains] },
-      filesystem: { allowWrite: [this.machine.stateDir], denyRead: this.credentialPaths() } } }
+      filesystem: { allowWrite: [...writable], denyRead: this.credentialPaths() } } }
   }
   /** Where Claude Code keeps the credentials it signs in with, which sandboxed Bash may not read. */
   private credentialPaths(): string[] {
@@ -305,6 +307,11 @@ export class Runtime implements SourceHost {
     if (this.closing()) return
     this.startSources()
     this.executor.resume()
+    // What the router was handed and did not take before a stop (a relay queued behind its last turn) goes in now, not with
+    // whatever reaches it next.
+    if (this.sessions.router.pendingIds().length) {
+      this.sessions.router.openSession().catch((error: unknown) => { this.options.logger.warn('claude-superagent: the router did not open: %s', String(error)) })
+    }
     this.passes.start()
     this.effects.start()
     this.runtimeHealth.set({ state: 'ready', detail: 'claude-superagent is ready', at: now() })
@@ -377,14 +384,17 @@ export class Runtime implements SourceHost {
   private async terminal(req: IncomingMessage, res: ServerResponse, pathname: string): Promise<boolean> {
     const json = (status: number, value: unknown) => { res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(value)) }
     if (req.method === 'GET' && pathname === '/local/events') {
+      // A stream opened while the service stops would keep the server from closing: the terminal tries again later.
+      if (this.lifetime.aborted) { json(503, { error: 'claude-superagent is stopping' }); return true }
       res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store', connection: 'keep-alive' })
       res.write(': claude-superagent\n\n')
       const send = (event: LiveEvent) => { res.write(`data: ${JSON.stringify(event)}\n\n`) }
       const beat = setInterval(() => { res.write(': beat\n\n') }, 15_000)
       beat.unref?.()
-      const end = () => { clearInterval(beat); this.bus.off('event', send) }
+      const stopping = () => { end(); res.end() }
+      const end = () => { clearInterval(beat); this.bus.off('event', send); this.lifetime.removeEventListener('abort', stopping) }
       this.bus.on('event', send)
-      req.on('close', end); this.lifetime.addEventListener('abort', () => { end(); res.end() }, { once: true })
+      req.on('close', end); this.lifetime.addEventListener('abort', stopping, { once: true })
       return true
     }
     if (req.method === 'GET' && pathname === '/local/tickets') {
@@ -409,7 +419,14 @@ export class Runtime implements SourceHost {
     if (req.method === 'GET' && route[2] === 'session') { json(200, session()); return true }
     if (req.method === 'POST' && route[2] === 'hold') {
       const body = await readJson(req).catch(() => ({})) as { now?: unknown }
+      // The hold waits for the worker's turn to end; a person who leaves meanwhile (Ctrl-C, a closed terminal) never opens the
+      // Session, and no one would hand it back, so it goes back to the worker at once.
+      let left = false
+      const leaving = () => { if (!res.writableFinished) left = true }
+      res.on('close', leaving)
       const { stopped } = await this.executor.hold(ticket.id, body?.now === true)
+      res.off('close', leaving)
+      if (left || res.destroyed) { this.executor.release(ticket.id, false); return true }
       json(200, { ...session(), stopped }); return true
     }
     if (req.method === 'POST' && route[2] === 'release') { this.executor.release(ticket.id); json(200, { released: true }); return true }
@@ -423,26 +440,31 @@ export class Runtime implements SourceHost {
     this.stopped.abort()
     try {
       this.assessor.stop()
-      // Every turn stops first, keeping what its Session was handed and did not take in its ledger, as upstream cancels its
-      // agents keeping their inboxes; then the effects drain, the workers' background work stops, and the queries end.
-      const sessions = [this.sessions.router, ...this.store.tickets.list().flatMap(ticket => this.sessions.worker(ticket.id) ?? [])]
+      // Every worker's turn stops first, keeping what its Session was handed and did not take in its ledger, as upstream cancels
+      // its agents keeping their inboxes; then the effects drain, the workers' background work stops, and the queries end. The
+      // router's turn is not interrupted: an interrupt would start its next turn with what waits, which the close then cuts,
+      // while a close leaves what waits in its ledger for the next start.
+      const sessions = this.store.tickets.list().flatMap(ticket => this.sessions.worker(ticket.id) ?? [])
       await Promise.allSettled(sessions.filter(session => session.working).map(session => session.interrupt()))
       await Promise.allSettled([passes, this.effects.drain(), ...this.loops])
       await this.executor.shutdown()
       await this.sessions.dispose()
-      await new Promise<void>(resolve => { if (this.server) this.server.close(() => resolve()); else resolve() })
+      await new Promise<void>(resolve => { if (this.server) { this.server.close(() => resolve()); this.server.closeAllConnections() } else resolve() })
     } finally {
       this.setup.restore()
       try { this.store.close() } finally { try { this.releaseLock() } catch { /* A compromised lock is released already. */ } }
     }
   }
 }
+/** A request body that is not JSON, or is too large: the request's fault, answered with a 400. */
+class BadRequest extends Error { readonly status = 400 }
 async function readJson(req: IncomingMessage, maxBytes = 128 * 1024): Promise<unknown> {
   let size = 0; const chunks: Buffer[] = []
   for await (const chunk of req) {
     const bytes = Buffer.from(chunk); size += bytes.length
-    if (size > maxBytes) throw new Error(`Request exceeds ${maxBytes} bytes`)
+    if (size > maxBytes) throw new BadRequest(`Request exceeds ${maxBytes} bytes`)
     chunks.push(bytes)
   }
-  return JSON.parse(Buffer.concat(chunks).toString('utf8') || 'null') as unknown
+  try { return JSON.parse(Buffer.concat(chunks).toString('utf8') || 'null') as unknown }
+  catch (error) { throw new BadRequest(`The request body is not JSON: ${error instanceof Error ? error.message : String(error)}`) }
 }
